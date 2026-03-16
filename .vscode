@@ -1,0 +1,38 @@
+﻿{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Install Python + Setup Environment",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\install_python_and_setup.ps1"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Setup Python Environment",
+      "type": "shell",
+      "command": "powershell",
+      "args": [
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\setup_vscode.ps1"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Run Privacy App",
+      "type": "shell",
+      "command": "${workspaceFolder}\\.venv\\Scripts\\python.exe",
+      "args": [
+        "${workspaceFolder}\\main.py"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

@@ -1,0 +1,395 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Privacy Spotlight Project Overview</title>
+  <style>
+    :root {
+      --bg: #f4f1ea;
+      --panel: rgba(255, 252, 246, 0.88);
+      --panel-strong: #fffdf8;
+      --text: #1c1a17;
+      --muted: #5d564d;
+      --accent: #0e6b5c;
+      --accent-dark: #09483e;
+      --line: rgba(28, 26, 23, 0.10);
+      --shadow: 0 24px 60px rgba(38, 32, 24, 0.12);
+      --radius: 22px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at top left, rgba(14, 107, 92, 0.15), transparent 28%),
+        radial-gradient(circle at top right, rgba(186, 140, 75, 0.14), transparent 24%),
+        linear-gradient(180deg, #f9f6ef 0%, var(--bg) 100%);
+      min-height: 100vh;
+    }
+
+    .shell {
+      width: min(1120px, calc(100% - 32px));
+      margin: 32px auto;
+    }
+
+    .hero {
+      background: linear-gradient(135deg, rgba(255,255,255,0.75), rgba(255,255,255,0.92));
+      border: 1px solid rgba(255,255,255,0.7);
+      box-shadow: var(--shadow);
+      border-radius: 32px;
+      padding: 40px;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -40px -60px auto;
+      width: 260px;
+      height: 260px;
+      background: radial-gradient(circle, rgba(14, 107, 92, 0.16), transparent 65%);
+      pointer-events: none;
+    }
+
+    .eyebrow {
+      display: inline-block;
+      padding: 8px 14px;
+      border-radius: 999px;
+      background: rgba(14, 107, 92, 0.10);
+      color: var(--accent-dark);
+      font-size: 0.88rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    h1 {
+      margin: 18px 0 14px;
+      font-size: clamp(2.2rem, 5vw, 4.5rem);
+      line-height: 0.96;
+      max-width: 760px;
+      font-weight: 700;
+    }
+
+    .subhead {
+      max-width: 760px;
+      font-size: 1.05rem;
+      line-height: 1.7;
+      color: var(--muted);
+      margin: 0 0 24px;
+    }
+
+    .hero-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+      gap: 14px;
+      margin-top: 28px;
+    }
+
+    .stat {
+      background: var(--panel);
+      border: 1px solid rgba(255,255,255,0.9);
+      border-radius: 18px;
+      padding: 18px;
+      backdrop-filter: blur(8px);
+    }
+
+    .stat strong {
+      display: block;
+      font-size: 1.5rem;
+      margin-bottom: 6px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 22px;
+      margin-top: 22px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid rgba(255,255,255,0.85);
+      box-shadow: var(--shadow);
+      border-radius: var(--radius);
+      padding: 26px;
+    }
+
+    h2 {
+      margin: 0 0 16px;
+      font-size: 1.35rem;
+    }
+
+    ul {
+      margin: 0;
+      padding-left: 20px;
+      line-height: 1.75;
+      color: #2b2722;
+    }
+
+    li + li {
+      margin-top: 10px;
+    }
+
+    .timeline {
+      display: grid;
+      gap: 14px;
+    }
+
+    .step {
+      border-left: 3px solid rgba(14, 107, 92, 0.35);
+      padding: 2px 0 2px 16px;
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 4px;
+    }
+
+    .accordion {
+      margin-top: 22px;
+      display: grid;
+      gap: 14px;
+    }
+
+    details {
+      background: var(--panel-strong);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      padding: 0;
+      overflow: hidden;
+    }
+
+    summary {
+      list-style: none;
+      cursor: pointer;
+      padding: 18px 20px;
+      font-weight: 700;
+      font-size: 1rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    summary::-webkit-details-marker {
+      display: none;
+    }
+
+    details p,
+    details ul {
+      padding: 0 20px 20px;
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.75;
+    }
+
+    .toggle {
+      border: none;
+      background: var(--accent);
+      color: white;
+      padding: 12px 18px;
+      border-radius: 999px;
+      font: inherit;
+      cursor: pointer;
+      transition: transform 160ms ease, background 160ms ease;
+      margin-top: 22px;
+    }
+
+    .toggle:hover {
+      background: var(--accent-dark);
+      transform: translateY(-1px);
+    }
+
+    .pitch {
+      margin-top: 22px;
+      padding: 22px;
+      border-radius: 20px;
+      background: linear-gradient(135deg, rgba(14,107,92,0.08), rgba(186,140,75,0.08));
+      border: 1px solid rgba(14, 107, 92, 0.10);
+      line-height: 1.8;
+    }
+
+    .footer {
+      text-align: center;
+      margin: 22px 0 8px;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    @media (max-width: 860px) {
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      .hero {
+        padding: 28px 22px;
+      }
+
+      .card {
+        padding: 22px;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <span class="eyebrow">Project Overview</span>
+      <h1>Privacy Spotlight</h1>
+      <p class="subhead">
+        A desktop privacy application that tracks the user's eye movement through a webcam and keeps only the
+        focused screen region clear, while blurring and dimming the rest of the display in real time.
+      </p>
+
+      <div class="hero-grid">
+        <div class="stat">
+          <strong>Python Desktop App</strong>
+          <span>Built using PyQt5, OpenCV, MediaPipe, NumPy, MSS, and PyTorch.</span>
+        </div>
+        <div class="stat">
+          <strong>Real-Time Tracking</strong>
+          <span>Uses gaze estimation, head-pose compensation, smoothing, and calibration.</span>
+        </div>
+        <div class="stat">
+          <strong>GPU-Ready Blur</strong>
+          <span>Runs blur rendering on NVIDIA CUDA when supported, with CPU fallback.</span>
+        </div>
+        <div class="stat">
+          <strong>Own Contribution</strong>
+          <span>Designed and implemented independently with focus on architecture, tracking, rendering, and optimization.</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid">
+      <article class="card">
+        <h2>Project Explanation</h2>
+        <ul>
+          <li>I built a desktop privacy tool that creates a spotlight effect on the screen based on where the user is looking.</li>
+          <li>The goal was to protect private on-screen content by blurring the background while keeping the area of attention visible.</li>
+          <li>This project was inspired by AMD Privacy View software powered by Eyeware, and I developed my own version to understand and implement the underlying ideas.</li>
+          <li>I used webcam-based face and eye landmark detection to estimate gaze direction in real time.</li>
+          <li>I added calibration logic so the system maps raw eye movement to actual screen coordinates more accurately.</li>
+          <li>I implemented smoothing and prediction so the spotlight circle moves naturally instead of jittering.</li>
+          <li>I optimized the rendering pipeline to support NVIDIA GPU acceleration for blur processing.</li>
+          <li>I handled practical issues like camera angle bias, blink pauses, global hotkeys, overlay performance, and CPU fallback.</li>
+          <li>I completed the full architecture, implementation, debugging, optimization, and final integration of the project.</li>
+        </ul>
+
+        <button class="toggle" id="togglePitch">Show Short Summary Version</button>
+
+        <div class="pitch hidden" id="pitchBox">
+          "I built this project as a privacy-focused desktop application where the screen stays clear only around the
+          user's point of attention, and the rest of the screen gets blurred. I used Python with PyQt5 for the overlay,
+          OpenCV and MediaPipe for face and eye tracking, and PyTorch CUDA for faster blur rendering on NVIDIA GPU.
+          I designed the calibration flow, smoothing logic, and tracking corrections myself. The project was inspired by
+          AMD Privacy View powered by Eyeware, and I implemented the architecture, tracking pipeline, rendering flow,
+          debugging, and final integration in this version."
+        </div>
+      </article>
+
+      <aside class="card">
+        <h2>Project Flow</h2>
+        <div class="timeline">
+          <div class="step">
+            <strong>1. Webcam Capture</strong>
+            The app reads frames continuously from the user's webcam.
+          </div>
+          <div class="step">
+            <strong>2. Face Landmark Detection</strong>
+            MediaPipe extracts eye, iris, and face landmarks.
+          </div>
+          <div class="step">
+            <strong>3. Gaze Estimation</strong>
+            Eye position, head pose, and calibration data are converted into a screen point.
+          </div>
+          <div class="step">
+            <strong>4. Smoothing</strong>
+            Filters and prediction reduce jitter and improve responsiveness.
+          </div>
+          <div class="step">
+            <strong>5. Spotlight Rendering</strong>
+            The system captures the screen, blurs the background, and preserves the focused circular region.
+          </div>
+          <div class="step">
+            <strong>6. Overlay Display</strong>
+            A full-screen transparent PyQt overlay displays the final privacy effect in real time.
+          </div>
+        </div>
+      </aside>
+    </section>
+
+    <section class="card accordion">
+      <h2>Point-Wise Explanation</h2>
+
+      <details open>
+        <summary>Problem Statement <span>+</span></summary>
+        <p>
+          I wanted to build a system that protects user privacy on a shared or visible screen by blurring everything
+          except the region the user is actively looking at.
+        </p>
+      </details>
+
+      <details>
+        <summary>Core Technologies Used <span>+</span></summary>
+        <ul>
+          <li>Python for the overall application logic.</li>
+          <li>PyQt5 for full-screen overlay and hotkey-based desktop interaction.</li>
+          <li>OpenCV for camera handling and image processing.</li>
+          <li>MediaPipe Face Mesh for face landmarks and iris tracking.</li>
+          <li>NumPy for vector math and coordinate calculations.</li>
+          <li>MSS for high-speed screen capture.</li>
+          <li>PyTorch CUDA for GPU-based blur acceleration on NVIDIA hardware.</li>
+        </ul>
+      </details>
+
+      <details>
+        <summary>My Main Contributions <span>+</span></summary>
+        <ul>
+          <li>Designed the end-to-end architecture for tracking, calibration, smoothing, rendering, and overlay control.</li>
+          <li>Implemented gaze mapping from webcam coordinates to screen coordinates.</li>
+          <li>Built a calibration system to improve real-world accuracy across the display.</li>
+          <li>Improved responsiveness by tuning smoothing and prediction logic.</li>
+          <li>Added GPU-based rendering support and fallback behavior.</li>
+          <li>Fixed camera-position bias for webcams placed above the monitor.</li>
+        </ul>
+      </details>
+
+      <details>
+        <summary>Challenges I Solved <span>+</span></summary>
+        <ul>
+          <li>Reducing jitter while still keeping movement fast and natural.</li>
+          <li>Correcting the downward-bias issue caused by a top-mounted webcam.</li>
+          <li>Balancing performance between screen capture, blur processing, and UI updates.</li>
+          <li>Handling cases where GPU acceleration is unavailable and falling back cleanly to CPU.</li>
+          <li>Keeping the overlay responsive without capturing itself during screen grabs.</li>
+        </ul>
+      </details>
+    </section>
+
+    <p class="footer">Prepared as a concise, reusable explanation page for the Privacy Spotlight project.</p>
+  </main>
+
+  <script>
+    const toggleButton = document.getElementById("togglePitch");
+    const pitchBox = document.getElementById("pitchBox");
+
+    toggleButton.addEventListener("click", () => {
+      const isHidden = pitchBox.classList.toggle("hidden");
+      toggleButton.textContent = isHidden
+        ? "Show Short Summary Version"
+        : "Hide Short Summary Version";
+    });
+  </script>
+</body>
+</html>

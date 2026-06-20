@@ -1,76 +1,100 @@
-# NVIDIA Privacy Spotlight
+---
+title: Eye Tracking Privacy Screen
+emoji: 👁️
+colorFrom: blue
+colorTo: indigo
+sdk: gradio
+sdk_version: 5.25.2
+app_file: app.py
+pinned: false
+---
 
-A desktop prototype that tracks your gaze with a webcam and keeps a circular area of the screen clear while blurring and dimming the background.
+# Eye Tracking Privacy Screen
+
+Browser-based privacy demo for Hugging Face Spaces. The app reads webcam frames in the browser, estimates gaze direction with MediaPipe Face Mesh, and applies a privacy effect when the user appears to look away or when the face is not tracked reliably.
 
 ## Features
 
-- Windows 10 and Windows 11 compatible
-- Webcam only runs while privacy mode is enabled
-- MediaPipe Face Mesh gaze estimation with head-pose compensation
-- Full-screen privacy overlay with adjustable spotlight radius
-- CUDA acceleration through PyTorch when an NVIDIA GPU is available
-- Automatic CPU fallback when CUDA is unavailable
-- Global hotkeys for toggle, resize, and exit
+- Browser webcam input
+- CPU-friendly gaze estimation
+- Clear center window when attention is on screen
+- Full privacy blur when attention is lost
+- Live status panel with detection confidence
 
-## Project Files
+## PyQt6 Desktop Dashboard
 
-- `main.py`: app controller, timers, and lifecycle management
-- `gaze_tracker.py`: webcam access, face landmarks, gaze estimation, smoothing
-- `screen_blur.py`: screen capture, Gaussian blur, spotlight masking, GPU fallback logic
-- `overlay_ui.py`: PyQt5 full-screen overlay and Windows global hotkeys
-- `requirements.txt`: Python dependencies
+The commercial Windows dashboard entry point is:
 
-## Installation
-
-1. Install Python 3.10 or 3.11 on Windows.
-2. Open PowerShell in the project folder.
-3. Create and activate a virtual environment:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\activate
-```
-
-4. Install the dependencies:
-
-```powershell
-pip install --upgrade pip
+```bash
 pip install -r requirements.txt
+python privacy_dashboard.py
 ```
 
-## Optional CUDA Acceleration
+It adds a modern dark desktop UI with:
 
-The blur path uses CUDA automatically when PyTorch can see a supported NVIDIA GPU.
+- Sidebar navigation for Dashboard, Tracking, Calibration, Display, Performance, Settings, and About.
+- Toggle cards, live confidence, radius controls, GPU/display status, and FPS.
+- PyQt6 calibration overlay with animated fullscreen targets.
+- pyqtgraph performance graphs updated every 500 ms.
+- JSON settings persistence in `settings/privacy_spotlight_settings.json`.
+- System tray menu with Open Dashboard, Toggle Privacy Mode, Start Calibration, and Quit.
+- Global hotkeys matching the existing controls.
 
-If you want GPU acceleration:
+Dashboard modules:
 
-1. Install the latest NVIDIA driver.
-2. Install a CUDA-enabled PyTorch build if your default `pip install torch` did not include CUDA support.
-3. Verify CUDA is visible to PyTorch:
+- `privacy_dashboard.py`: PyQt6 application entry point.
+- `backend/privacy_controller.py`: UI-to-backend adapter that reuses `FaceTracker`, `GazeEstimator`, and `CalibrationSession`.
+- `backend/system_info.py`: GPU, CPU, RAM, display, and refresh-rate helpers.
+- `ui/main_window.py`: main shell, sidebar, stacked pages, tray integration.
+- `ui/pages.py`: dashboard, tracking, calibration, display, performance, settings, and about pages.
+- `ui/widgets.py`: reusable cards, animated toggle switches, sliders, status pills, preview widget, and live graphs.
+- `ui/floating_status.py`: compact always-on-top status widget.
+- `settings/settings_manager.py`: JSON settings manager and defaults.
 
-```powershell
-python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU only')"
+Production integration hooks are marked in `backend/privacy_controller.py`. The dashboard intentionally connects to the existing tracker, estimator, and calibration classes instead of replacing them.
+
+## Files
+
+- `app.py`: Hugging Face entry point
+- `face_tracker.py`: gaze and head-pose extraction reused from the original project
+- `gaze_estimator.py`: smoothing and mapping helpers from the original project
+- `calibration.py`: lightweight calibration utilities
+- `smoothing_filter.py`: temporal smoothing
+- `requirements.txt`: deployment dependencies
+
+## Run Locally
+
+```bash
+pip install -r requirements.txt
+python app.py
 ```
 
-If CUDA is not available, the app falls back to the CPU path.
+## Deploy To Hugging Face Spaces
 
-## Run
-
-```powershell
-python main.py
-```
-
-## Hotkeys
-
-- `Ctrl+Alt+P`: toggle privacy mode on or off
-- `Ctrl+Alt+=`: increase spotlight radius
-- `Ctrl+Alt+-`: decrease spotlight radius
-- `Ctrl+Alt+Q`: exit the application
+1. Create a new Space on Hugging Face.
+2. Choose `Gradio` as the SDK.
+3. Upload all project files or push the folder with Git.
+4. Wait for the Space build to finish.
+5. Open the generated public Space URL.
 
 ## Notes
 
-- Accuracy is best when the screen is directly in front of the user.
-- The overlay briefly hides before each screen capture so it does not capture itself.
-- CPU mode works best at 1080p or below.
-- Performance depends on CPU/GPU and Camera
-- Requires minimum 2GB Ram 
+- The app is designed for CPU Spaces and does not require CUDA.
+- Browser permission for webcam access must be allowed.
+- For best results, keep your face centered and screen directly ahead.
+
+## dashboard
+Run the new dashboard like this:
+cd "D:\CODEX\Privacy app"
+.\.venv\Scripts\python.exe privacy_dashboard.py
+Then test these in order:
+Open the dashboard and check that all pages load.
+Toggle Privacy Mode from the Dashboard page.
+Try the hotkey: Ctrl + Alt + P.
+Go to Calibration and click Start Calibration.
+Adjust radius from Dashboard or Display and confirm the spotlight changes.
+Right-click the tray icon and test Open Dashboard, Toggle Privacy Mode, and Quit.
+If it fails to open, run this once:
+cd "D:\CODEX\Privacy app"
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt
+.\.venv\Scripts\python.exe privacy_dashboard.py

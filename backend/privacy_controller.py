@@ -1,0 +1,590 @@
+from __future__ import annotations
+
+import ctypes
+import time
+from ctypes import wintypes
+from typing import Optional, Tuple
+
+import cv2
+import mss
+import numpy as np
+from PyQt6 import QtCore, QtGui, QtWidgets
+
+from calibration import CalibrationSession
+from face_tracker import FaceTracker
+from gaze_estimator import GazeEstimator
+from settings import SettingsManager
+
+
+MOD_ALT = 0x0001
+MOD_CONTROL = 0x0002
+WM_HOTKEY = 0x0312
+WDA_NONE = 0x00000000
+WDA_EXCLUDEFROMCAPTURE = 0x00000011
+WS_EX_LAYERED = 0x00080000
+WS_EX_TRANSPARENT = 0x00000020
+GWL_EXSTYLE = -20
+
+
+def _user32():
+    user32 = ctypes.windll.user32
+    user32.RegisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_uint, ctypes.c_uint]
+    user32.RegisterHotKey.restype = wintypes.BOOL
+    user32.UnregisterHotKey.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.UnregisterHotKey.restype = wintypes.BOOL
+    user32.SetWindowDisplayAffinity.argtypes = [wintypes.HWND, ctypes.c_uint]
+    user32.SetWindowDisplayAffinity.restype = wintypes.BOOL
+    user32.GetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int]
+    user32.GetWindowLongW.restype = ctypes.c_long
+    user32.SetWindowLongW.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_long]
+    user32.SetWindowLongW.restype = ctypes.c_long
+    return user32
+
+
+class SpotlightRenderer:
+    """PyQt6-safe renderer that mirrors the existing backend rendering contract."""
+
+    def __init__(self) -> None:
+        self.sct = mss.mss()
+        self.monitor = self.sct.monitors[1]
+        self.screen_size = (self.monitor["width"], self.monitor["height"])
+        self.acceleration_label = self._detect_acceleration_label()
+        self.render_scale = 0.46 if self.screen_size[0] * self.screen_size[1] >= 1920 * 1080 else 0.62
+
+    def capture_screen(self) -> np.ndarray:
+        shot = self.sct.grab(self.monitor)
+        frame = np.array(shot, dtype=np.uint8)
+        return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+
+    def render_spotlight(
+        self,
+        frame: np.ndarray,
+        gaze_point: Tuple[int, int],
+        radius: int,
+        brightness_reduction: int,
+        softness: int,
+        opacity: int,
+    ) -> np.ndarray:
+        small = cv2.resize(frame, (0, 0), fx=self.render_scale, fy=self.render_scale, interpolation=cv2.INTER_AREA)
+        blur = 9 + int(softness / 100 * 30)
+        if blur % 2 == 0:
+            blur += 1
+        blurred = cv2.GaussianBlur(small, (blur, blur), 0, borderType=cv2.BORDER_REPLICATE)
+        background = cv2.resize(blurred, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR)
+        reduction = np.clip(brightness_reduction / 100, 0.0, 1.0)
+        background = np.clip(background.astype(np.float32) * (1.0 - 0.72 * reduction), 0, 255).astype(np.uint8)
+
+        mask = self._create_mask(frame.shape[:2], gaze_point, radius, softness)
+        alpha = mask[..., None] * np.clip(opacity / 100, 0.1, 1.0)
+        return np.clip(frame.astype(np.float32) * alpha + background.astype(np.float32) * (1.0 - alpha), 0, 255).astype(np.uint8)
+
+    @staticmethod
+    def _create_mask(image_shape: Tuple[int, int], point: Tuple[int, int], radius: int, softness: int) -> np.ndarray:
+        mask = np.zeros(image_shape, dtype=np.float32)
+        cv2.circle(mask, point, radius, 1.0, -1, lineType=cv2.LINE_AA)
+        feather = max(11, int(radius * (0.12 + softness / 220)))
+        if feather % 2 == 0:
+            feather += 1
+        return cv2.GaussianBlur(mask, (feather, feather), 0)
+
+    @staticmethod
+    def _detect_acceleration_label() -> str:
+        try:
+            import torch
+
+            if torch.cuda.is_available():
+                index = 0
+                return f"CUDA GPU{index + 1} ({torch.cuda.get_device_name(index)})"
+        except (ImportError, OSError):
+            pass
+        return "CPU"
+
+
+class PrivacyOverlay(QtWidgets.QWidget):
+    calibration_click_requested = QtCore.pyqtSignal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setWindowTitle("Privacy Spotlight Overlay")
+        self.setWindowFlags(
+            QtCore.Qt.WindowType.FramelessWindowHint
+            | QtCore.Qt.WindowType.WindowStaysOnTopHint
+            | QtCore.Qt.WindowType.Tool
+            | QtCore.Qt.WindowType.WindowDoesNotAcceptFocus
+        )
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
+        self._image = QtWidgets.QLabel(self)
+        self._image.setScaledContents(True)
+        self._status = QtWidgets.QLabel(self)
+        self._status.setStyleSheet("color: white; background: rgba(0,0,0,132); border-radius: 10px; padding: 10px;")
+        self._status.hide()
+        self._target: Optional[Tuple[int, int]] = None
+        self._guide_points: list[Tuple[int, int]] = []
+        self._excluded = False
+        self._hidden_for_capture = False
+        self._calibrating = False
+        self._fit_to_virtual_desktop()
+
+    def _fit_to_virtual_desktop(self) -> None:
+        geometry = QtCore.QRect()
+        for screen in QtWidgets.QApplication.screens():
+            geometry = geometry.united(screen.geometry()) if geometry.isValid() else screen.geometry()
+        self.setGeometry(geometry)
+        self._image.setGeometry(self.rect())
+        self._status.setGeometry(24, 24, min(1060, self.width() - 48), 74)
+
+    def set_status_text(self, text: str) -> None:
+        self._status.setText(text)
+        self._status.setVisible(bool(text))
+
+    def show_privacy(self) -> None:
+        self._fit_to_virtual_desktop()
+        self.showFullScreen()
+        self.raise_()
+        self._exclude_from_capture()
+        self._set_click_through(True)
+
+    def hide_privacy(self) -> None:
+        self.hide()
+
+    def prepare_for_capture(self) -> None:
+        if self._calibrating or self._excluded:
+            return
+        if self.isVisible():
+            self._hidden_for_capture = True
+            self.hide()
+
+    def restore_after_capture(self) -> None:
+        if self._hidden_for_capture:
+            self.show_privacy()
+            self._hidden_for_capture = False
+
+    def update_frame(self, frame: np.ndarray) -> None:
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        height, width, channels = rgb.shape
+        image = QtGui.QImage(rgb.data, width, height, channels * width, QtGui.QImage.Format.Format_RGB888)
+        self._image.setPixmap(QtGui.QPixmap.fromImage(image))
+        self._status.raise_()
+
+    def begin_calibration(self, target: Tuple[int, int], guide_points: list[Tuple[int, int]], text: str) -> None:
+        self._calibrating = True
+        self._target = target
+        self._guide_points = guide_points
+        self.set_status_text(text)
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+        self.show_privacy()
+        self._set_click_through(False)
+        self.update()
+
+    def update_calibration(self, target: Tuple[int, int], guide_points: list[Tuple[int, int]], text: str) -> None:
+        self._target = target
+        self._guide_points = guide_points
+        self.set_status_text(text)
+        self.update()
+
+    def end_calibration(self) -> None:
+        self._calibrating = False
+        self._target = None
+        self._guide_points = []
+        self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
+        self._set_click_through(True)
+        self.update()
+
+    def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
+        if self._calibrating and event.button() == QtCore.Qt.MouseButton.LeftButton:
+            self.calibration_click_requested.emit()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def paintEvent(self, event: QtGui.QPaintEvent) -> None:
+        super().paintEvent(event)
+        if not self._calibrating:
+            return
+        painter = QtGui.QPainter(self)
+        painter.setRenderHint(QtGui.QPainter.RenderHint.Antialiasing, True)
+        painter.fillRect(self.rect(), QtGui.QColor(2, 5, 9, 138))
+        for point in self._guide_points:
+            self._draw_target(painter, point, point == self._target)
+
+    def _draw_target(self, painter: QtGui.QPainter, point: Tuple[int, int], active: bool) -> None:
+        center = QtCore.QPoint(*point)
+        radius = 24 if active else 12
+        glow = QtGui.QColor(41, 196, 255, 92 if active else 24)
+        fill = QtGui.QColor(41, 196, 255, 236 if active else 88)
+        painter.setPen(QtCore.Qt.PenStyle.NoPen)
+        painter.setBrush(glow)
+        painter.drawEllipse(center, radius + 22, radius + 22)
+        painter.setBrush(fill)
+        painter.drawEllipse(center, radius, radius)
+        painter.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255, 230), 3 if active else 1))
+        painter.setBrush(QtCore.Qt.BrushStyle.NoBrush)
+        painter.drawEllipse(center, radius + 9, radius + 9)
+        if active:
+            painter.drawLine(center.x() - 44, center.y(), center.x() + 44, center.y())
+            painter.drawLine(center.x(), center.y() - 44, center.x(), center.y() + 44)
+
+    def _exclude_from_capture(self) -> None:
+        if self._excluded:
+            return
+        try:
+            self._excluded = bool(_user32().SetWindowDisplayAffinity(wintypes.HWND(int(self.winId())), WDA_EXCLUDEFROMCAPTURE))
+        except AttributeError:
+            self._excluded = False
+
+    def _set_click_through(self, enabled: bool) -> None:
+        try:
+            hwnd = wintypes.HWND(int(self.winId()))
+            user32 = _user32()
+            style = user32.GetWindowLongW(hwnd, GWL_EXSTYLE) | WS_EX_LAYERED
+            style = style | WS_EX_TRANSPARENT if enabled else style & ~WS_EX_TRANSPARENT
+            user32.SetWindowLongW(hwnd, GWL_EXSTYLE, style)
+        except AttributeError:
+            pass
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        if self._excluded:
+            _user32().SetWindowDisplayAffinity(wintypes.HWND(int(self.winId())), WDA_NONE)
+        super().closeEvent(event)
+
+
+class HotkeyListener(QtWidgets.QWidget):
+    toggle_privacy = QtCore.pyqtSignal()
+    start_calibration = QtCore.pyqtSignal()
+    radius_increase = QtCore.pyqtSignal()
+    radius_decrease = QtCore.pyqtSignal()
+    quit_requested = QtCore.pyqtSignal()
+
+    DEFAULT_HOTKEYS = {
+        "toggle_privacy": "Ctrl+Alt+P",
+        "radius_increase": "Ctrl+Alt+=",
+        "radius_decrease": "Ctrl+Alt+-",
+        "quit": "Ctrl+Alt+Q",
+        "calibration": "Ctrl+Alt+C",
+    }
+
+    HOTKEY_IDS = {
+        "toggle_privacy": 1,
+        "radius_increase": 2,
+        "radius_decrease": 3,
+        "quit": 4,
+        "calibration": 5,
+    }
+
+    def __init__(self, hotkeys: dict[str, str] | None = None) -> None:
+        super().__init__()
+        self.setWindowTitle("Privacy Spotlight Hotkeys")
+        self._registered_ids: set[int] = set()
+        self._hotkeys = {**self.DEFAULT_HOTKEYS, **(hotkeys or {})}
+        self._register_hotkeys()
+
+    def update_hotkeys(self, hotkeys: dict[str, str]) -> None:
+        self._unregister_hotkeys()
+        self._hotkeys = {**self.DEFAULT_HOTKEYS, **hotkeys}
+        self._register_hotkeys()
+
+    def nativeEvent(self, event_type, message):
+        try:
+            msg = wintypes.MSG.from_address(int(message))
+        except (TypeError, ValueError):
+            return False, 0
+        if msg.message != WM_HOTKEY:
+            return False, 0
+        hotkey_id = int(msg.wParam)
+        signals = {
+            1: self.toggle_privacy,
+            2: self.radius_increase,
+            3: self.radius_decrease,
+            4: self.quit_requested,
+            5: self.start_calibration,
+        }
+        if hotkey_id in signals:
+            signals[hotkey_id].emit()
+        return True, 0
+
+    def _register_hotkeys(self) -> None:
+        try:
+            hwnd = wintypes.HWND(int(self.winId()))
+            user32 = _user32()
+            for action, hotkey in self._hotkeys.items():
+                parsed = self._parse_hotkey(hotkey)
+                hotkey_id = self.HOTKEY_IDS.get(action)
+                if parsed is None or hotkey_id is None:
+                    continue
+                modifiers, key_code = parsed
+                if user32.RegisterHotKey(hwnd, hotkey_id, modifiers, key_code):
+                    self._registered_ids.add(hotkey_id)
+        except AttributeError:
+            pass
+
+    def _unregister_hotkeys(self) -> None:
+        try:
+            hwnd = wintypes.HWND(int(self.winId()))
+            user32 = _user32()
+            for hotkey_id in tuple(self._registered_ids):
+                user32.UnregisterHotKey(hwnd, hotkey_id)
+            self._registered_ids.clear()
+        except AttributeError:
+            pass
+
+    @staticmethod
+    def _parse_hotkey(text: str) -> Optional[tuple[int, int]]:
+        parts = [part.strip() for part in text.split("+") if part.strip()]
+        if not parts:
+            return None
+        modifiers = 0
+        key_token = parts[-1].upper()
+        for part in parts[:-1]:
+            token = part.upper()
+            if token == "CTRL" or token == "CONTROL":
+                modifiers |= MOD_CONTROL
+            elif token == "ALT":
+                modifiers |= MOD_ALT
+        key_map = {
+            "=": 0xBB,
+            "+": 0xBB,
+            "-": 0xBD,
+            "MINUS": 0xBD,
+            "PLUS": 0xBB,
+        }
+        if key_token in key_map:
+            key_code = key_map[key_token]
+        elif len(key_token) == 1 and key_token.isalnum():
+            key_code = ord(key_token)
+        else:
+            return None
+        return modifiers, key_code
+
+    def closeEvent(self, event: QtGui.QCloseEvent) -> None:
+        self._unregister_hotkeys()
+        super().closeEvent(event)
+
+
+class PrivacyController(QtCore.QObject):
+    status_changed = QtCore.pyqtSignal(dict)
+    calibration_changed = QtCore.pyqtSignal(dict)
+    notification_requested = QtCore.pyqtSignal(str, str)
+
+    def __init__(self, app: QtWidgets.QApplication, settings: SettingsManager) -> None:
+        super().__init__()
+        self.app = app
+        self.settings = settings
+        self.renderer = SpotlightRenderer()
+        self.overlay = PrivacyOverlay()
+        self.face_tracker = FaceTracker()
+        self.gaze_estimator = GazeEstimator(self.renderer.screen_size)
+        self.gaze_estimator.load_calibration()
+        self.calibration = CalibrationSession(self.renderer.screen_size)
+        self.hotkeys = HotkeyListener(settings.get("hotkeys", {}))
+        self.hotkeys.hide()
+        self.privacy_enabled = bool(settings.get("privacy_on_startup", settings.get("privacy_enabled")))
+        self.eye_tracking_enabled = bool(settings.get("eye_tracking_enabled"))
+        self.head_pose_enabled = bool(settings.get("head_pose_enabled"))
+        self.radius = int(settings.get("radius"))
+        self.last_point = self._screen_center()
+        self.fps = 0.0
+        self._frame_count = 0
+        self._fps_started = time.perf_counter()
+        self._frame_busy = False
+        self._shutting_down = False
+
+        self.frame_timer = QtCore.QTimer(self)
+        self.frame_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
+        self.frame_timer.setInterval(max(7, int(1000 / max(60, self.app.primaryScreen().refreshRate() or 60))))
+        self.frame_timer.timeout.connect(self._update_overlay_frame)
+        self.status_timer = QtCore.QTimer(self)
+        self.status_timer.setInterval(500)
+        self.status_timer.timeout.connect(self.emit_status)
+        self.status_timer.start()
+
+        self.overlay.calibration_click_requested.connect(self.capture_calibration_point)
+        self.hotkeys.toggle_privacy.connect(self.toggle_privacy_mode)
+        self.hotkeys.start_calibration.connect(self.start_calibration)
+        self.hotkeys.radius_increase.connect(lambda: self.set_radius(self.radius + 24))
+        self.hotkeys.radius_decrease.connect(lambda: self.set_radius(self.radius - 24))
+        self.hotkeys.quit_requested.connect(self.shutdown)
+
+        if self.privacy_enabled:
+            self.enable_privacy_mode(True)
+
+    def _screen_center(self) -> Tuple[int, int]:
+        return self.renderer.screen_size[0] // 2, self.renderer.screen_size[1] // 2
+
+    def enable_privacy_mode(self, enabled: bool) -> None:
+        if self.calibration.active:
+            return
+        self.privacy_enabled = enabled
+        self.settings.set("privacy_enabled", enabled)
+        if enabled:
+            if self.eye_tracking_enabled:
+                self.face_tracker.start()
+            self.gaze_estimator.reset()
+            self.overlay.show_privacy()
+            self.frame_timer.start()
+            self.notification_requested.emit("Privacy mode enabled", "Spotlight protection is running.")
+        else:
+            self.frame_timer.stop()
+            self.face_tracker.stop()
+            self.overlay.hide_privacy()
+            self.notification_requested.emit("Privacy mode disabled", "Screen dimming is off.")
+        self.emit_status()
+
+    def toggle_privacy_mode(self) -> None:
+        self.enable_privacy_mode(not self.privacy_enabled)
+
+    def set_eye_tracking_enabled(self, enabled: bool) -> None:
+        self.eye_tracking_enabled = enabled
+        self.settings.set("eye_tracking_enabled", enabled)
+        if self.privacy_enabled and enabled:
+            self.face_tracker.start()
+        elif not self.calibration.active:
+            self.face_tracker.stop()
+        self.emit_status()
+
+    def set_head_pose_enabled(self, enabled: bool) -> None:
+        # Hook point: forward this to a production tracker if head-pose can be independently disabled.
+        self.head_pose_enabled = enabled
+        self.settings.set("head_pose_enabled", enabled)
+        self.emit_status()
+
+    def set_radius(self, radius: int) -> None:
+        self.radius = max(120, min(560, int(radius)))
+        self.settings.set("radius", self.radius)
+        self.emit_status()
+
+    def update_setting(self, key: str, value) -> None:
+        self.settings.set(key, value)
+        self.emit_status()
+
+    def start_calibration(self) -> None:
+        if self.calibration.active:
+            return
+        self.calibration.start()
+        self.gaze_estimator.clear_calibration()
+        self.face_tracker.start()
+        self._show_calibration_target()
+        self.notification_requested.emit("Calibration started", "Look at each target and click to sample.")
+
+    def stop_calibration(self) -> None:
+        if not self.calibration.active:
+            return
+        self.calibration.stop()
+        self.overlay.end_calibration()
+        if not self.privacy_enabled:
+            self.face_tracker.stop()
+            self.overlay.hide()
+        self.calibration_changed.emit({"state": "Waiting", "progress": 0, "accuracy": 0})
+
+    def reset_calibration(self) -> None:
+        self.gaze_estimator.clear_calibration()
+        self.calibration_changed.emit({"state": "Waiting", "progress": 0, "accuracy": 0})
+        self.notification_requested.emit("Calibration reset", "Stored gaze samples were cleared.")
+
+    def _show_calibration_target(self) -> None:
+        current = self.calibration.current_target()
+        if current is None:
+            return
+        label, position, message = current
+        guide_points = [target[1] for target in self.calibration.targets]
+        progress = int((self.calibration.index / len(self.calibration.targets)) * 100)
+        text = f"{self.calibration.progress_text()}\n{message}\nKeep both eyes open, then click the target."
+        if self.calibration.index == 0:
+            self.overlay.begin_calibration(position, guide_points, text)
+        else:
+            self.overlay.update_calibration(position, guide_points, text)
+        self.calibration_changed.emit({"state": "Running", "progress": progress, "accuracy": self._accuracy_percent()})
+
+    def capture_calibration_point(self) -> None:
+        current = self.calibration.current_target()
+        if current is None:
+            return
+        label, position, _ = current
+        sample = self.face_tracker.collect_gaze_vector_sample()
+        if sample is None:
+            self.notification_requested.emit("Tracking unstable", "Hold still and click the target again.")
+            return
+        self.gaze_estimator.add_calibration_sample(label, position, sample)
+        if not self.calibration.advance():
+            self.finish_calibration()
+            return
+        self._show_calibration_target()
+
+    def finish_calibration(self) -> None:
+        self.calibration.stop()
+        self.overlay.end_calibration()
+        if not self.privacy_enabled:
+            self.face_tracker.stop()
+            self.overlay.hide()
+        self.calibration_changed.emit({"state": "Completed", "progress": 100, "accuracy": self._accuracy_percent()})
+        self.notification_requested.emit("Calibration completed", "Gaze mapping has been saved.")
+
+    def _accuracy_percent(self) -> int:
+        observation = self.face_tracker.get_latest_observation()
+        confidence = observation.confidence if observation else 0.0
+        return int(max(0.0, min(1.0, confidence)) * 100)
+
+    def _update_overlay_frame(self) -> None:
+        if not self.privacy_enabled or self._frame_busy or self.calibration.active:
+            return
+        self._frame_busy = True
+        try:
+            observation = self.face_tracker.get_latest_observation() if self.eye_tracking_enabled else None
+            estimate = self.gaze_estimator.estimate(observation)
+            if estimate is not None:
+                self.last_point = estimate.screen_point
+            self.overlay.prepare_for_capture()
+            self.app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            frame = self.renderer.capture_screen()
+            processed = self.renderer.render_spotlight(
+                frame,
+                self.last_point,
+                self.radius,
+                int(self.settings.get("brightness_reduction")),
+                int(self.settings.get("spotlight_softness")),
+                int(self.settings.get("spotlight_opacity")),
+            )
+            self.overlay.restore_after_capture()
+            self.overlay.update_frame(processed)
+            self._frame_count += 1
+            elapsed = time.perf_counter() - self._fps_started
+            if elapsed >= 1.0:
+                self.fps = self._frame_count / elapsed
+                self._frame_count = 0
+                self._fps_started = time.perf_counter()
+        finally:
+            self._frame_busy = False
+
+    def emit_status(self) -> None:
+        observation = self.face_tracker.get_latest_observation()
+        confidence = int((observation.confidence if observation else 0.0) * 100)
+        face_detected = bool(observation and observation.face_detected)
+        self.overlay.set_status_text(
+            f"Privacy: {'ON' if self.privacy_enabled else 'OFF'} | Radius: {self.radius}px | "
+            f"Confidence: {confidence}% | FPS: {self.fps:.1f}"
+        )
+        self.status_changed.emit(
+            {
+                "privacy_enabled": self.privacy_enabled,
+                "eye_tracking_enabled": self.eye_tracking_enabled,
+                "head_pose_enabled": self.head_pose_enabled,
+                "face_detected": face_detected,
+                "confidence": confidence,
+                "radius": self.radius,
+                "fps": self.fps,
+                "acceleration": self.renderer.acceleration_label,
+                "screen_size": self.renderer.screen_size,
+            }
+        )
+
+    def shutdown(self) -> None:
+        if self._shutting_down:
+            return
+        self._shutting_down = True
+        self.frame_timer.stop()
+        self.status_timer.stop()
+        self.face_tracker.stop()
+        self.overlay.close()
+        self.hotkeys.close()
+        self.app.quit()

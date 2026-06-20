@@ -1,8 +1,6 @@
 import sys
 from typing import Optional, Tuple
 
-import numpy as np
-
 from PyQt5 import QtCore, QtWidgets
 
 from calibration import CalibrationSession
@@ -30,14 +28,11 @@ class PrivacyViewApp(QtCore.QObject):
         self.privacy_enabled = False
         self.radius = 260
         self.last_point: Optional[Tuple[int, int]] = self._screen_center()
-        self.target_point = np.array(self.last_point, dtype=np.float32)
-        self.display_point = np.array(self.last_point, dtype=np.float32)
         self._shutting_down = False
         self._frame_in_progress = False
         self.display_refresh_hz = self._detect_refresh_rate()
         self.calibration_started_tracker = False
         self._last_status_update_ms = 0
-        self._last_frame_time_s: Optional[float] = None
 
         self.frame_timer = QtCore.QTimer(self)
         self.frame_timer.setTimerType(QtCore.Qt.PreciseTimer)
@@ -112,11 +107,6 @@ class PrivacyViewApp(QtCore.QObject):
         if self.privacy_enabled:
             self.face_tracker.start()
             self.gaze_estimator.reset()
-            center = self._screen_center()
-            self.last_point = center
-            self.target_point = np.array(center, dtype=np.float32)
-            self.display_point = np.array(center, dtype=np.float32)
-            self._last_frame_time_s = None
             self.frame_timer.start()
             self.overlay.show_overlay()
         else:
@@ -208,24 +198,12 @@ class PrivacyViewApp(QtCore.QObject):
 
         self._frame_in_progress = True
         try:
-            now_s = QtCore.QDateTime.currentMSecsSinceEpoch() / 1000.0
             observation = self.face_tracker.get_latest_observation()
             estimate = self.gaze_estimator.estimate(observation)
             if estimate is not None:
-                self.target_point = np.array(estimate.screen_point, dtype=np.float32)
+                self.last_point = estimate.screen_point
             elif self.last_point is None:
-                center = self._screen_center()
-                self.last_point = center
-                self.target_point = np.array(center, dtype=np.float32)
-                self.display_point = np.array(center, dtype=np.float32)
-
-            dt = 1.0 / max(self.display_refresh_hz, 1)
-            if self._last_frame_time_s is not None:
-                dt = max(1e-3, min(0.050, now_s - self._last_frame_time_s))
-            self._last_frame_time_s = now_s
-            smoothing = min(1.0, dt * 14.0)
-            self.display_point += (self.target_point - self.display_point) * smoothing
-            self.last_point = (int(self.display_point[0]), int(self.display_point[1]))
+                self.last_point = self._screen_center()
 
             self.overlay.prepare_for_capture()
             self.app.processEvents(QtCore.QEventLoop.ExcludeUserInputEvents)

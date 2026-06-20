@@ -1,0 +1,24 @@
+{
+  "privacy_enabled": false,
+  "eye_tracking_enabled": true,
+  "head_pose_enabled": true,
+  "radius": 336,
+  "tracking_sensitivity": 97,
+  "smoothing": 100,
+  "confidence_threshold": 100,
+  "brightness_reduction": 70,
+  "spotlight_softness": 55,
+  "spotlight_opacity": 90,
+  "launch_on_startup": false,
+  "start_minimized": false,
+  "privacy_on_startup": false,
+  "theme": "Dark",
+  "logs_enabled": true,
+  "hotkeys": {
+    "toggle_privacy": "Ctrl+Alt+P",
+    "calibration": "Ctrl+Alt+C",
+    "radius_increase": "Ctrl+Alt+=",
+    "radius_decrease": "Ctrl+Alt+-",
+    "quit": "Ctrl+Alt+Q"
+  }
+}

@@ -159,9 +159,14 @@ class CalibrationMapper:
             feature_matrix = np.asarray(feature_rows, dtype=np.float64)
             design_features = np.column_stack([np.ones(len(feature_matrix)), feature_matrix])
             try:
-                feature_coefficients, _, _, _ = np.linalg.lstsq(
-                    design_features, points, rcond=None
-                )
+                # Small ridge regularization prevents the feature model
+                # from becoming ill-conditioned when adjacent calibration points
+                # produce very similar eye/head measurements.
+                regularization = 0.02
+                gram = design_features.T @ design_features
+                ridge = gram + (regularization * np.eye(gram.shape[0], dtype=np.float64))
+                rhs = design_features.T @ points
+                feature_coefficients = np.linalg.solve(ridge, rhs)
                 self._feature_coefficients = feature_coefficients
             except np.linalg.LinAlgError:
                 self._feature_coefficients = None
@@ -180,8 +185,6 @@ class CalibrationMapper:
         target = np.asarray(gaze_vector, dtype=np.float64)
 
         if self._coefficients is not None and self.is_complete():
-            mapped = self._map_quadratic(target)
-        elif self._coefficients is not None and self.is_complete():
             mapped = self._map_quadratic(target)
         elif self.is_complete():
             mapped = self._grid_map(gaze_vector)

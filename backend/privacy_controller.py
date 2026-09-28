@@ -690,12 +690,17 @@ class PrivacyController(QtCore.QObject):
             self._frame_busy = False
 
     def emit_status(self) -> None:
-        observation = self.face_tracker.get_latest_observation()
-        confidence = int((observation.confidence if observation else 0.0) * 100)
-        face_detected = bool(observation and observation.face_detected)
+        diagnostics = self.face_tracker.get_diagnostics()
+        confidence = int(diagnostics["confidence"] * 100)
+        face_detected = bool(diagnostics["face_detected"])
+        gaze = diagnostics.get("gaze_vector")
+        gaze_text = "—" if gaze is None else f"{gaze[0]:.3f}, {gaze[1]:.3f}"
         self.overlay.set_status_text(
-            f"Privacy: {'ON' if self.privacy_enabled else 'OFF'} | Radius: {self.radius}px | "
-            f"Confidence: {confidence}% | FPS: {self.fps:.1f}"
+            f"Privacy: {'ON' if self.privacy_enabled else 'OFF'} | "
+            f"Face: {'YES' if face_detected else 'NO'} | "
+            f"Iris: {'YES' if diagnostics['iris_detected'] else 'NO'} | "
+            f"Gaze: {gaze_text} | Confidence: {confidence}% | "
+            f"Track FPS: {diagnostics['processing_fps']:.1f}"
         )
         self.status_changed.emit(
             {
@@ -703,7 +708,19 @@ class PrivacyController(QtCore.QObject):
                 "eye_tracking_enabled": self.eye_tracking_enabled,
                 "head_pose_enabled": self.head_pose_enabled,
                 "face_detected": face_detected,
+                "iris_detected": diagnostics["iris_detected"],
+                "camera_open": diagnostics["camera_open"],
                 "confidence": confidence,
+                "gaze_vector": gaze,
+                "left_pupil": diagnostics["left_pupil"],
+                "right_pupil": diagnostics["right_pupil"],
+                "yaw": diagnostics["yaw"],
+                "pitch": diagnostics["pitch"],
+                "roll": diagnostics["roll"],
+                "ear": diagnostics["ear"],
+                "blink": diagnostics["blink"],
+                "tracking_fps": diagnostics["processing_fps"],
+                "gaze_motion": diagnostics["gaze_motion"],
                 "radius": self.radius,
                 "fps": self.fps,
                 "acceleration": self.renderer.acceleration_label,

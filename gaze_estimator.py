@@ -42,8 +42,9 @@ class GazeEstimator:
         label: str,
         screen_point: Tuple[int, int],
         gaze_vector: Tuple[float, float],
+        gaze_features: Optional[Tuple[float, ...]] = None,
     ) -> None:
-        self.mapper.add_sample(label, screen_point, gaze_vector)
+        self.mapper.add_sample(label, screen_point, gaze_vector, gaze_features)
         if self.mapper.is_complete():
             self.mapper.save()
 

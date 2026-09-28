@@ -505,7 +505,6 @@ class PrivacyController(QtCore.QObject):
         if not self.privacy_enabled:
             self.face_tracker.stop()
             self.overlay.hide()
-        self.calibration_changed.emit({"state": "Waiting", "progress": 0, "accuracy": 0})
 
     def reset_calibration(self) -> None:
         self.gaze_estimator.clear_calibration()
@@ -519,7 +518,7 @@ class PrivacyController(QtCore.QObject):
         label, position, message = current
         guide_points = [target[1] for target in self.calibration.targets]
         progress = int((self.calibration.index / len(self.calibration.targets)) * 100)
-        text = f"{self.calibration.progress_text()}\n{message}\nKeep both eyes open, then click the target."
+        text = f"{self.calibration.progress_text()}\n{message}\nLook at the dot for a moment, then click it."
         if self.calibration.index == 0:
             self.overlay.begin_calibration(position, guide_points, text)
         else:
@@ -531,13 +530,14 @@ class PrivacyController(QtCore.QObject):
         if current is None:
             return
         label, position, _ = current
-        sample = self.face_tracker.collect_gaze_vector_sample()
+        sample = self.face_tracker.collect_gaze_sample(
+            float(self.settings.get("calibration_sample_seconds", 0.45))
+        )
         if sample is None:
-            self.notification_requested.emit("Tracking unstable", "Hold still and click the target again.")
+            self.notification_requested.emit("Tracking unstable", "Keep your face centered, hold your gaze, and try again.")
             return
-        observation = self.face_tracker.get_latest_observation()
-        gaze_features = observation.gaze_features if observation else None
-        self.gaze_estimator.add_calibration_sample(label, position, sample, gaze_features)
+        gaze_vector, gaze_features = sample
+        self.gaze_estimator.add_calibration_sample(label, position, gaze_vector, gaze_features)
         if not self.calibration.advance():
             self.finish_calibration()
             return

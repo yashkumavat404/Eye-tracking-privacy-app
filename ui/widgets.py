@@ -169,7 +169,7 @@ class PreviewWidget(QtWidgets.QWidget):
         painter.setPen(QtCore.Qt.PenStyle.NoPen)
         painter.setBrush(QtGui.QColor(0, 0, 0, int(190 * self.opacity / 100)))
         painter.drawRoundedRect(rect, 8, 8)
-        gradient = QtGui.QRadialGradient(center, self.radius + self.softness)
+        gradient = QtGui.QRadialGradient(QtCore.QPointF(center), float(self.radius + self.softness))
         gradient.setColorAt(0.0, QtGui.QColor(255, 255, 255, 0))
         gradient.setColorAt(0.72, QtGui.QColor(255, 255, 255, 0))
         gradient.setColorAt(1.0, QtGui.QColor(0, 0, 0, int(210 * self.opacity / 100)))

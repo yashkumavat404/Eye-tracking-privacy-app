@@ -643,9 +643,7 @@ class PrivacyController(QtCore.QObject):
                     self.last_point = estimate.screen_point
                     self._last_gaze_point = estimate.screen_point
 
-            # The overlay must be hidden for the screen grab. Do not call
-            # processEvents() here: yielding to Qt between hide/capture/show
-            # introduces visible jitter and can re-enter the timer.
+            # Capture the underlying desktop only after the overlay is hidden.
             if self.overlay.is_capture_safe_to_hide():
                 self.overlay.prepare_for_capture()
                 overlay_hidden = True

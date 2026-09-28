@@ -123,6 +123,7 @@ class CalibrationMapper:
         if len(self.samples) < 6:
             self._coefficients = None
             self._rmse = None
+            self._feature_coefficients = None
             return
 
         vectors = np.asarray(
@@ -178,9 +179,7 @@ class CalibrationMapper:
 
         target = np.asarray(gaze_vector, dtype=np.float64)
 
-        if self._feature_coefficients is not None and self.is_complete():
-            # Legacy callers still use the 2D vector; feature-aware mapping is used
-            # through map_observation() below.
+        if self._coefficients is not None and self.is_complete():
             mapped = self._map_quadratic(target)
         elif self._coefficients is not None and self.is_complete():
             mapped = self._map_quadratic(target)

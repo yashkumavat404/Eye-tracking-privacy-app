@@ -200,7 +200,9 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self._guide_points = guide_points
         self.set_status_text(text)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
-        self.show_privacy()
+        self._image.clear()
+        self.show()
+        self.raise_()
         self._set_click_through(False)
         self.update()
 
@@ -432,6 +434,9 @@ class PrivacyController(QtCore.QObject):
         self.status_timer.setInterval(500)
         self.status_timer.timeout.connect(self.emit_status)
         self.status_timer.start()
+        self.calibration_timer = QtCore.QTimer(self)
+        self.calibration_timer.setInterval(10)
+        self.calibration_timer.timeout.connect(self._collect_calibration_frames)
 
         self.overlay.calibration_click_requested.connect(self.capture_calibration_point)
         self.hotkeys.toggle_privacy.connect(self.toggle_privacy_mode)
@@ -498,6 +503,8 @@ class PrivacyController(QtCore.QObject):
         self.calibration.start()
         self.gaze_estimator.clear_calibration()
         self.face_tracker.start()
+        self.frame_timer.stop()
+        self.calibration_timer.start()
         self._show_calibration_target()
         self.notification_requested.emit("Calibration started", "Look at each target and click to sample.")
 
@@ -505,8 +512,12 @@ class PrivacyController(QtCore.QObject):
         if not self.calibration.active:
             return
         self.calibration.stop()
+        self._calibration_collecting = False
+        self.calibration_timer.stop()
         self.overlay.end_calibration()
-        if not self.privacy_enabled:
+        if self.privacy_enabled:
+            self.frame_timer.start()
+        else:
             self.face_tracker.stop()
             self.overlay.hide()
 

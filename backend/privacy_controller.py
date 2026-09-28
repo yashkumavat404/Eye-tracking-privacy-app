@@ -540,23 +540,74 @@ class PrivacyController(QtCore.QObject):
             self.overlay.update_calibration(position, guide_points, text)
         self.calibration_changed.emit({"state": "Running", "progress": progress, "accuracy": self._accuracy_percent()})
 
-    def capture_calibration_point(self) -> None:
+    def _collect_calibration_frames(self) -> None:
+        if not self.calibration.active or not self._calibration_collecting:
+            return
+        observation = self.face_tracker.get_latest_observation()
+        if (
+            observation
+            and observation.gaze_vector
+            and observation.gaze_features
+            and not observation.blink
+            and observation.confidence >= 0.62
+            and observation.timestamp != self._calibration_last_timestamp
+        ):
+            self._calibration_samples.append((observation.gaze_vector, observation.gaze_features))
+            self._calibration_last_timestamp = observation.timestamp
+
+        if time.perf_counter() < self._calibration_deadline:
+            return
+
+        self._calibration_collecting = False
+        if len(self._calibration_samples) < 6:
+            self.notification_requested.emit(
+                "Tracking unstable",
+                "Keep your face centered, hold your gaze, and try again.",
+            )
+            return
+
+        vectors = np.asarray([item[0] for item in self._calibration_samples], dtype=np.float32)
+        features = np.asarray([item[1] for item in self._calibration_samples], dtype=np.float32)
+        center = np.median(vectors, axis=0)
+        distances = np.linalg.norm(vectors - center, axis=1)
+        keep = distances <= np.percentile(distances, 80)
+        if int(keep.sum()) < 4:
+            keep = np.ones(len(vectors), dtype=bool)
+
+        gaze_vector = np.median(vectors[keep], axis=0)
+        gaze_features = np.median(features[keep], axis=0)
         current = self.calibration.current_target()
         if current is None:
             return
+
         label, position, _ = current
-        sample = self.face_tracker.collect_gaze_sample(
-            float(self.settings.get("calibration_sample_seconds", 0.45))
+        self.gaze_estimator.add_calibration_sample(
+            label,
+            position,
+            (float(gaze_vector[0]), float(gaze_vector[1])),
+            tuple(float(value) for value in gaze_features),
         )
-        if sample is None:
-            self.notification_requested.emit("Tracking unstable", "Keep your face centered, hold your gaze, and try again.")
-            return
-        gaze_vector, gaze_features = sample
-        self.gaze_estimator.add_calibration_sample(label, position, gaze_vector, gaze_features)
         if not self.calibration.advance():
             self.finish_calibration()
             return
         self._show_calibration_target()
+
+    def capture_calibration_point(self) -> None:
+        current = self.calibration.current_target()
+        if current is None or self._calibration_collecting:
+            return
+
+        self._calibration_collecting = True
+        self._calibration_samples.clear()
+        self._calibration_last_timestamp = -1.0
+        self._calibration_deadline = time.perf_counter() + float(
+            self.settings.get("calibration_sample_seconds", 0.45)
+        )
+        self.calibration_changed.emit({
+            "state": "Sampling...",
+            "progress": int((self.calibration.index / len(self.calibration.targets)) * 100),
+            "accuracy": self._accuracy_percent(),
+        })
 
     def finish_calibration(self) -> None:
         self.calibration.stop()

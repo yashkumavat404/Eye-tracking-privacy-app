@@ -535,7 +535,9 @@ class PrivacyController(QtCore.QObject):
         if sample is None:
             self.notification_requested.emit("Tracking unstable", "Hold still and click the target again.")
             return
-        self.gaze_estimator.add_calibration_sample(label, position, sample)
+        observation = self.face_tracker.get_latest_observation()
+        gaze_features = observation.gaze_features if observation else None
+        self.gaze_estimator.add_calibration_sample(label, position, sample, gaze_features)
         if not self.calibration.advance():
             self.finish_calibration()
             return

@@ -42,19 +42,24 @@ def _user32():
 
 
 class SpotlightRenderer:
-    """PyQt6-safe renderer that mirrors the existing backend rendering contract."""
+    """Low-latency screen capture and spotlight composition."""
 
     def __init__(self) -> None:
         self.sct = mss.mss()
         self.monitor = self.sct.monitors[1]
         self.screen_size = (self.monitor["width"], self.monitor["height"])
         self.acceleration_label = self._detect_acceleration_label()
-        self.render_scale = 0.46 if self.screen_size[0] * self.screen_size[1] >= 1920 * 1080 else 0.62
+
+        pixels = self.screen_size[0] * self.screen_size[1]
+        self.render_scale = 0.34 if pixels >= 2560 * 1440 else 0.40 if pixels >= 1920 * 1080 else 0.52
+
+        self._mask_small: Optional[np.ndarray] = None
+        self._mask_key: Optional[tuple[int, int, int, int, int, int]] = None
 
     def capture_screen(self) -> np.ndarray:
         shot = self.sct.grab(self.monitor)
-        frame = np.array(shot, dtype=np.uint8)
-        return cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        # mss returns BGRA; avoid an extra cvtColor/copy.
+        return np.asarray(shot, dtype=np.uint8)[:, :, :3]
 
     def render_spotlight(
         self,
@@ -65,36 +70,54 @@ class SpotlightRenderer:
         softness: int,
         opacity: int,
     ) -> np.ndarray:
-        small = cv2.resize(frame, (0, 0), fx=self.render_scale, fy=self.render_scale, interpolation=cv2.INTER_AREA)
-        blur = 9 + int(softness / 100 * 30)
-        if blur % 2 == 0:
-            blur += 1
-        blurred = cv2.GaussianBlur(small, (blur, blur), 0, borderType=cv2.BORDER_REPLICATE)
-        background = cv2.resize(blurred, (frame.shape[1], frame.shape[0]), interpolation=cv2.INTER_LINEAR)
-        reduction = np.clip(brightness_reduction / 100, 0.0, 1.0)
-        background = np.clip(background.astype(np.float32) * (1.0 - 0.72 * reduction), 0, 255).astype(np.uint8)
+        height, width = frame.shape[:2]
+        scale = self.render_scale
+        small_w = max(1, int(width * scale))
+        small_h = max(1, int(height * scale))
 
-        mask = self._create_mask(frame.shape[:2], gaze_point, radius, softness)
-        alpha = mask[..., None] * np.clip(opacity / 100, 0.1, 1.0)
-        return np.clip(frame.astype(np.float32) * alpha + background.astype(np.float32) * (1.0 - alpha), 0, 255).astype(np.uint8)
+        small = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_AREA)
+        blur_size = 9 + int(np.clip(softness, 0, 100) * 0.18)
+        blur_size |= 1
+        blurred = cv2.GaussianBlur(
+            small,
+            (blur_size, blur_size),
+            0,
+            borderType=cv2.BORDER_REPLICATE,
+        )
 
-    @staticmethod
-    def _create_mask(image_shape: Tuple[int, int], point: Tuple[int, int], radius: int, softness: int) -> np.ndarray:
-        mask = np.zeros(image_shape, dtype=np.float32)
-        cv2.circle(mask, point, radius, 1.0, -1, lineType=cv2.LINE_AA)
-        feather = max(11, int(radius * (0.12 + softness / 220)))
-        if feather % 2 == 0:
-            feather += 1
-        return cv2.GaussianBlur(mask, (feather, feather), 0)
+        point = (
+            int(np.clip(gaze_point[0] * scale, 0, small_w - 1)),
+            int(np.clip(gaze_point[1] * scale, 0, small_h - 1)),
+        )
+        scaled_radius = max(8, int(radius * scale))
+        key = (small_w, small_h, point[0], point[1], scaled_radius, int(softness))
+        if key != self._mask_key:
+            mask = np.zeros((small_h, small_w), dtype=np.uint8)
+            cv2.circle(mask, point, scaled_radius, 255, -1, lineType=cv2.LINE_AA)
+            feather = max(7, int(scaled_radius * (0.10 + np.clip(softness, 0, 100) / 300)))
+            feather |= 1
+            self._mask_small = (
+                cv2.GaussianBlur(mask, (feather, feather), 0).astype(np.float32) / 255.0
+            )
+            self._mask_key = key
+
+        alpha = self._mask_small[..., None] * np.clip(opacity / 100.0, 0.1, 1.0)
+        reduction = np.clip(brightness_reduction / 100.0, 0.0, 1.0)
+        background = blurred.astype(np.float32) * (1.0 - 0.72 * reduction)
+
+        composed = (
+            small.astype(np.float32) * alpha
+            + background * (1.0 - alpha)
+        ).clip(0, 255).astype(np.uint8)
+
+        return cv2.resize(composed, (width, height), interpolation=cv2.INTER_LINEAR)
 
     @staticmethod
     def _detect_acceleration_label() -> str:
         try:
             import torch
-
             if torch.cuda.is_available():
-                index = 0
-                return f"CUDA GPU{index + 1} ({torch.cuda.get_device_name(index)})"
+                return f"CUDA ({torch.cuda.get_device_name(0)})"
         except (ImportError, OSError):
             pass
         return "CPU"

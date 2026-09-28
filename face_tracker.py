@@ -72,6 +72,10 @@ class FaceTracker:
         self._neutral_head_offset = np.zeros(2, dtype=np.float32)
         self._neutral_ready = False
         self._feature_history: list[np.ndarray] = []
+        self._frame_count = 0
+        self._fps_started = time.perf_counter()
+        self.processing_fps = 0.0
+        self._gaze_motion_history: list[np.ndarray] = []
 
     def start(self) -> None:
         if self.running:
@@ -83,6 +87,10 @@ class FaceTracker:
         self._neutral_ready = False
         self.latest_observation = None
         self._feature_history.clear()
+        self._frame_count = 0
+        self._fps_started = time.perf_counter()
+        self.processing_fps = 0.0
+        self._gaze_motion_history.clear()
         self.running = True
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
@@ -185,6 +193,13 @@ class FaceTracker:
             with self.lock:
                 self.latest_observation = observation
 
+            self._frame_count += 1
+            elapsed = time.perf_counter() - self._fps_started
+            if elapsed >= 1.0:
+                self.processing_fps = self._frame_count / elapsed
+                self._frame_count = 0
+                self._fps_started = time.perf_counter()
+
     def _process_frame(self, frame: np.ndarray) -> FaceObservation:
         timestamp = time.perf_counter()
         frame_height, frame_width = frame.shape[:2]
@@ -242,6 +257,9 @@ class FaceTracker:
         raw_x = 0.5 + (eye_offset[0] * 2.18) + (adjusted_head_offset[0] * 1.20) + (adjusted_yaw * 0.08)
         raw_y = 0.5 + (eye_offset[1] * 1.92) + (adjusted_head_offset[1] * 0.85) - (adjusted_pitch * 0.04)
         stabilized_vector = self._stabilize_gaze_vector(raw_x, raw_y)
+        self._gaze_motion_history.append(np.asarray(stabilized_vector, dtype=np.float32))
+        if len(self._gaze_motion_history) > 30:
+            self._gaze_motion_history.pop(0)
 
         # Keep both eyes and head-pose signals for calibration. The learned mapper
         # can compensate for per-eye asymmetry instead of relying only on raw_x/raw_y.
@@ -295,6 +313,49 @@ class FaceTracker:
             blink=blink,
             confidence=confidence,
         )
+
+    def get_diagnostics(self) -> dict:
+        observation = self.get_latest_observation()
+        camera_open = bool(self.capture is not None and self.capture.isOpened())
+        if observation is None:
+            return {
+                "camera_open": camera_open,
+                "face_detected": False,
+                "iris_detected": False,
+                "left_pupil": None,
+                "right_pupil": None,
+                "gaze_vector": None,
+                "yaw": 0.0,
+                "pitch": 0.0,
+                "roll": 0.0,
+                "ear": 0.0,
+                "blink": False,
+                "confidence": 0.0,
+                "processing_fps": self.processing_fps,
+                "gaze_motion": 0.0,
+            }
+
+        motion = 0.0
+        if len(self._gaze_motion_history) >= 2:
+            history = np.stack(self._gaze_motion_history, axis=0)
+            motion = float(np.mean(np.linalg.norm(np.diff(history, axis=0), axis=1)))
+
+        return {
+            "camera_open": camera_open,
+            "face_detected": observation.face_detected,
+            "iris_detected": observation.left_pupil is not None and observation.right_pupil is not None,
+            "left_pupil": observation.left_pupil,
+            "right_pupil": observation.right_pupil,
+            "gaze_vector": observation.gaze_vector,
+            "yaw": observation.yaw,
+            "pitch": observation.pitch,
+            "roll": observation.roll,
+            "ear": observation.ear,
+            "blink": observation.blink,
+            "confidence": observation.confidence,
+            "processing_fps": self.processing_fps,
+            "gaze_motion": motion,
+        }
 
     def _stabilize_gaze_vector(self, raw_x: float, raw_y: float) -> Tuple[float, float]:
         vector = np.asarray([raw_x, raw_y], dtype=np.float32)

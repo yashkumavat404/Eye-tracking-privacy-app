@@ -156,7 +156,11 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self._image = QtWidgets.QLabel(self)
         self._image.setScaledContents(True)
+        # The image covers the whole overlay. Keep it out of the mouse-event
+        # chain so calibration clicks reach PrivacyOverlay.mousePressEvent().
+        self._image.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._status = QtWidgets.QLabel(self)
+        self._status.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._status.setStyleSheet("color: white; background: rgba(0,0,0,132); border-radius: 10px; padding: 10px;")
         self._status.hide()
         self._target: Optional[Tuple[int, int]] = None

@@ -53,6 +53,7 @@ class FaceObservation:
     ear: float
     blink: bool
     confidence: float
+    gaze_features: Optional[Tuple[float, ...]]
 
 
 class FaceTracker:
@@ -70,6 +71,7 @@ class FaceTracker:
         self._neutral_yaw = 0.0
         self._neutral_head_offset = np.zeros(2, dtype=np.float32)
         self._neutral_ready = False
+        self._feature_history: list[np.ndarray] = []
 
     def start(self) -> None:
         if self.running:
@@ -80,6 +82,7 @@ class FaceTracker:
         self._neutral_head_offset = np.zeros(2, dtype=np.float32)
         self._neutral_ready = False
         self.latest_observation = None
+        self._feature_history.clear()
         self.running = True
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
@@ -207,9 +210,13 @@ class FaceTracker:
 
         eye_width = max((left_eye_width + right_eye_width) / 2.0, 1.0)
         eye_height = max((left_eye_height + right_eye_height) / 2.0, 1.0)
-        iris_center = (np.asarray(left_pupil, dtype=np.float32) + np.asarray(right_pupil, dtype=np.float32)) / 2.0
-        eye_center = (left_eye_center + right_eye_center) / 2.0
-        eye_offset = (iris_center - eye_center) / np.array([eye_width, eye_height], dtype=np.float32)
+        left_eye_offset = (np.asarray(left_pupil, dtype=np.float32) - left_eye_center) / np.array(
+            [max(left_eye_width, 1.0), max(left_eye_height, 1.0)], dtype=np.float32
+        )
+        right_eye_offset = (np.asarray(right_pupil, dtype=np.float32) - right_eye_center) / np.array(
+            [max(right_eye_width, 1.0), max(right_eye_height, 1.0)], dtype=np.float32
+        )
+        eye_offset = (left_eye_offset + right_eye_offset) / 2.0
 
         face_center = points[NOSE_TIP]
         frame_center = np.array([frame_width / 2.0, frame_height / 2.0], dtype=np.float32)
@@ -223,6 +230,23 @@ class FaceTracker:
         raw_x = 0.5 + (eye_offset[0] * 2.18) + (adjusted_head_offset[0] * 1.20) + (adjusted_yaw * 0.08)
         raw_y = 0.5 + (eye_offset[1] * 1.92) + (adjusted_head_offset[1] * 0.85) - (adjusted_pitch * 0.04)
         stabilized_vector = self._stabilize_gaze_vector(raw_x, raw_y)
+
+        # Keep both eyes and head-pose signals for calibration. The learned mapper
+        # can compensate for per-eye asymmetry instead of relying only on raw_x/raw_y.
+        features = np.array(
+            [
+                left_eye_offset[0], left_eye_offset[1],
+                right_eye_offset[0], right_eye_offset[1],
+                adjusted_head_offset[0], adjusted_head_offset[1],
+                adjusted_yaw, adjusted_pitch, adjusted_yaw * adjusted_head_offset[0],
+                adjusted_pitch * adjusted_head_offset[1],
+            ],
+            dtype=np.float32,
+        )
+        self._feature_history.append(features)
+        if len(self._feature_history) > 3:
+            self._feature_history.pop(0)
+        stable_features = np.median(np.stack(self._feature_history), axis=0)
 
         ear = (
             self._eye_aspect_ratio(points, LEFT_EYE_CONTOUR)
@@ -249,6 +273,7 @@ class FaceTracker:
             frame_size=(frame_width, frame_height),
             face_detected=True,
             gaze_vector=stabilized_vector,
+            gaze_features=tuple(float(value) for value in stable_features),
             left_pupil=(float(left_pupil[0]), float(left_pupil[1])),
             right_pupil=(float(right_pupil[0]), float(right_pupil[1])),
             yaw=yaw,
@@ -346,6 +371,7 @@ class FaceTracker:
             ear=0.0,
             blink=False,
             confidence=0.0,
+            gaze_features=None,
         )
 
     @staticmethod

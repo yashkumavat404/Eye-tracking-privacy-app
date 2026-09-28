@@ -195,11 +195,12 @@ class CalibrationMapper:
     def map_observation(self, gaze_vector: Tuple[float, float], gaze_features: Optional[Tuple[float, ...]]) -> Tuple[int, int]:
         if self._feature_coefficients is not None and self.is_complete() and gaze_features is not None:
             feature_array = np.asarray(gaze_features, dtype=np.float64)
-            design = np.concatenate(([1.0], feature_array))
-            mapped = design @ self._feature_coefficients
-            mapped[0] = np.clip(mapped[0], 0, self.screen_width - 1)
-            mapped[1] = np.clip(mapped[1], 0, self.screen_height - 1)
-            return int(mapped[0]), int(mapped[1])
+            if feature_array.size == self._feature_coefficients.shape[0] - 1:
+                design = np.concatenate(([1.0], feature_array))
+                mapped = design @ self._feature_coefficients
+                mapped[0] = np.clip(mapped[0], 0, self.screen_width - 1)
+                mapped[1] = np.clip(mapped[1], 0, self.screen_height - 1)
+                return int(mapped[0]), int(mapped[1])
         return self.map_vector_to_screen(gaze_vector)
 
     def _map_quadratic(self, target: np.ndarray) -> np.ndarray:

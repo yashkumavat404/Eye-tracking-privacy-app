@@ -119,6 +119,7 @@ class TrackingPage(QtWidgets.QWidget):
         self.motion_value = QtWidgets.QLabel("0.000")
         self.track_fps_value = QtWidgets.QLabel("0.0")
         self.blink_value = QtWidgets.QLabel("No")
+        self.neutral_value = QtWidgets.QLabel("Warming up")
         rows = [
             ("Camera", self.camera_value),
             ("Face", self.face_value),
@@ -129,6 +130,7 @@ class TrackingPage(QtWidgets.QWidget):
             ("Gaze motion", self.motion_value),
             ("Tracker FPS", self.track_fps_value),
             ("Blink", self.blink_value),
+            ("Neutral baseline", self.neutral_value),
         ]
         for index, (label, value) in enumerate(rows):
             row = index % 3
@@ -158,6 +160,7 @@ class TrackingPage(QtWidgets.QWidget):
         self.motion_value.setText(f"{data.get('gaze_motion', 0.0):.4f}")
         self.track_fps_value.setText(f"{data.get('tracking_fps', 0.0):.1f}")
         self.blink_value.setText("Yes" if data.get("blink") else "No")
+        self.neutral_value.setText("Ready" if data.get("neutral_ready") else "Warming up")
 
     @staticmethod
     def _switch_row(title: str, subtitle: str, switch: ToggleSwitch) -> QtWidgets.QHBoxLayout:

@@ -106,7 +106,7 @@ else {
 }
 
 Write-Step "Verifying core packages"
-& $venvPython -c "import sys, cv2, mediapipe, mss, numpy, torch; from PyQt5 import QtCore; print('python', sys.version.split()[0]); print('opencv', cv2.__version__); print('mediapipe', mediapipe.__version__); print('mss', mss.__version__); print('numpy', numpy.__version__); print('pyqt5', QtCore.PYQT_VERSION_STR); print('torch', torch.__version__)"
+& $venvPython -c "import sys, cv2, mediapipe, mss, numpy, torch; from PyQt6 import QtCore; print('python', sys.version.split()[0]); print('opencv', cv2.__version__); print('mediapipe', mediapipe.__version__); print('mss', mss.__version__); print('numpy', numpy.__version__); print('pyqt5', QtCore.PYQT_VERSION_STR); print('torch', torch.__version__)"
 
 if (-not $SkipCudaCheck) {
     Write-Step "Checking CUDA availability in PyTorch"
@@ -117,5 +117,5 @@ Write-Step "Bootstrap complete"
 Write-Host "Next steps:" -ForegroundColor Yellow
 Write-Host "1. cd `"$projectRoot`"" -ForegroundColor White
 Write-Host "2. .venv\Scripts\Activate.ps1" -ForegroundColor White
-Write-Host "3. python main.py" -ForegroundColor White
+Write-Host "3. python privacy_dashboard.py" -ForegroundColor White
 Write-Host "Optional: rerun with -InstallCudaTorch to fetch the NVIDIA CUDA build of PyTorch." -ForegroundColor White

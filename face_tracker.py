@@ -66,7 +66,7 @@ class FaceTracker:
         self.lock = threading.Lock()
         self._face_mesh = None
         self._gaze_vector_history: list[np.ndarray] = []
-        self._history_limit = 3
+        self._history_limit = 2
         self._neutral_pitch = 0.0
         self._neutral_yaw = 0.0
         self._neutral_head_offset = np.zeros(2, dtype=np.float32)
@@ -230,22 +230,18 @@ class FaceTracker:
         yaw, pitch, roll = self._estimate_head_pose(points, frame_width, frame_height)
         left_pupil = tuple(points[LEFT_IRIS].mean(axis=0))
         right_pupil = tuple(points[RIGHT_IRIS].mean(axis=0))
-        left_eye_center = self._eye_center(points, LEFT_EYE)
-        right_eye_center = self._eye_center(points, RIGHT_EYE)
-        left_eye_width = np.linalg.norm(points[LEFT_EYE["outer"]] - points[LEFT_EYE["inner"]])
-        right_eye_width = np.linalg.norm(points[RIGHT_EYE["outer"]] - points[RIGHT_EYE["inner"]])
-        left_eye_height = np.linalg.norm(points[LEFT_EYE["top"]] - points[LEFT_EYE["bottom"]])
-        right_eye_height = np.linalg.norm(points[RIGHT_EYE["top"]] - points[RIGHT_EYE["bottom"]])
-
-        eye_width = max((left_eye_width + right_eye_width) / 2.0, 1.0)
-        eye_height = max((left_eye_height + right_eye_height) / 2.0, 1.0)
-        left_eye_offset = (np.asarray(left_pupil, dtype=np.float32) - left_eye_center) / np.array(
-            [max(left_eye_width, 1.0), max(left_eye_height, 1.0)], dtype=np.float32
+        left_eye_offset = self._normalized_iris_offset(
+            np.asarray(left_pupil, dtype=np.float32),
+            points,
+            LEFT_EYE,
         )
-        right_eye_offset = (np.asarray(right_pupil, dtype=np.float32) - right_eye_center) / np.array(
-            [max(right_eye_width, 1.0), max(right_eye_height, 1.0)], dtype=np.float32
+        right_eye_offset = self._normalized_iris_offset(
+            np.asarray(right_pupil, dtype=np.float32),
+            points,
+            RIGHT_EYE,
         )
-        eye_offset = (left_eye_offset + right_eye_offset) / 2.0
+        # Average both eyes, but preserve the full normalized iris travel.
+        eye_offset = (left_eye_offset + right_eye_offset) * 0.5
 
         face_center = points[NOSE_TIP]
         frame_center = np.array([frame_width / 2.0, frame_height / 2.0], dtype=np.float32)
@@ -256,8 +252,11 @@ class FaceTracker:
         adjusted_pitch = pitch - self._neutral_pitch
         adjusted_head_offset = head_offset - self._neutral_head_offset
 
-        raw_x = 0.5 + (eye_offset[0] * 2.18) + (adjusted_head_offset[0] * 1.20) + (adjusted_yaw * 0.08)
-        raw_y = 0.5 + (eye_offset[1] * 1.92) + (adjusted_head_offset[1] * 0.85) - (adjusted_pitch * 0.04)
+        # Iris displacement is the primary signal. Head motion is only a
+        # small assist so eye movement remains responsive instead of being
+        # swallowed by face/head compensation.
+        raw_x = 0.5 + (eye_offset[0] * 1.95) + (adjusted_head_offset[0] * 0.55) + (adjusted_yaw * 0.035)
+        raw_y = 0.5 + (eye_offset[1] * 1.95) + (adjusted_head_offset[1] * 0.45) - (adjusted_pitch * 0.025)
         stabilized_vector = self._stabilize_gaze_vector(raw_x, raw_y)
         self._gaze_motion_history.append(np.asarray(stabilized_vector, dtype=np.float32))
         if len(self._gaze_motion_history) > 30:
@@ -275,10 +274,10 @@ class FaceTracker:
             ],
             dtype=np.float32,
         )
-        self._feature_history.append(features)
-        if len(self._feature_history) > 3:
-            self._feature_history.pop(0)
-        stable_features = np.median(np.stack(self._feature_history), axis=0)
+        # Use the newest feature vector for live gaze. The calibration sampler
+        # already performs robust temporal aggregation, so another 3-frame
+        # median here only adds visible latency.
+        stable_features = features
 
         ear = (
             self._eye_aspect_ratio(points, LEFT_EYE_CONTOUR)
@@ -371,7 +370,7 @@ class FaceTracker:
         else:
             history = np.stack(self._gaze_vector_history, axis=0)
             median = np.median(history, axis=0)
-            stabilized = (0.78 * vector) + (0.22 * median)
+            stabilized = (0.90 * vector) + (0.10 * median)
 
         return float(stabilized[0]), float(stabilized[1])
 
@@ -390,6 +389,29 @@ class FaceTracker:
 
         if self._neutral_samples >= self._neutral_warmup_frames:
             self._neutral_ready = True
+
+    @staticmethod
+    def _normalized_iris_offset(
+        pupil: np.ndarray,
+        points: np.ndarray,
+        eye: dict[str, int],
+    ) -> np.ndarray:
+        """Return iris position in eye-local normalized coordinates."""
+        outer = points[eye["outer"]]
+        inner = points[eye["inner"]]
+        top = points[eye["top"]]
+        bottom = points[eye["bottom"]]
+
+        horizontal = outer - inner
+        vertical = bottom - top
+        horizontal_norm = max(float(np.dot(horizontal, horizontal)), 1.0)
+        vertical_norm = max(float(np.dot(vertical, vertical)), 1.0)
+
+        h = float(np.dot(pupil - inner, horizontal) / horizontal_norm)
+        v = float(np.dot(pupil - top, vertical) / vertical_norm)
+
+        # Convert [0, 1] eye-local coordinates into a centered signal.
+        return np.asarray([h - 0.5, v - 0.5], dtype=np.float32)
 
     @staticmethod
     def _estimate_head_pose(points: np.ndarray, frame_width: int, frame_height: int) -> Tuple[float, float, float]:

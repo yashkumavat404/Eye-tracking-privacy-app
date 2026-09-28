@@ -418,6 +418,10 @@ class PrivacyController(QtCore.QObject):
         self._last_observation_timestamp = -1.0
         self._last_gaze_point = self.last_point
         self._capture_failures = 0
+        self._calibration_collecting = False
+        self._calibration_samples: list[tuple[Tuple[float, float], Tuple[float, ...]]] = []
+        self._calibration_deadline = 0.0
+        self._calibration_last_timestamp = -1.0
 
         self.frame_timer = QtCore.QTimer(self)
         self.frame_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)

@@ -412,10 +412,14 @@ class PrivacyController(QtCore.QObject):
         self._fps_started = time.perf_counter()
         self._frame_busy = False
         self._shutting_down = False
+        self._last_observation_timestamp = -1.0
+        self._last_gaze_point = self.last_point
+        self._capture_failures = 0
 
         self.frame_timer = QtCore.QTimer(self)
         self.frame_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
-        self.frame_timer.setInterval(max(7, int(1000 / max(60, self.app.primaryScreen().refreshRate() or 60))))
+        # Keep the desktop renderer responsive without tying it to the webcam inference rate.
+        self.frame_timer.setInterval(16)
         self.frame_timer.timeout.connect(self._update_overlay_frame)
         self.status_timer = QtCore.QTimer(self)
         self.status_timer.setInterval(500)
@@ -551,24 +555,39 @@ class PrivacyController(QtCore.QObject):
     def _update_overlay_frame(self) -> None:
         if not self.privacy_enabled or self._frame_busy or self.calibration.active:
             return
+
         self._frame_busy = True
+        overlay_hidden = False
         try:
+            # Consume the newest camera result without waiting for inference.
             observation = self.face_tracker.get_latest_observation() if self.eye_tracking_enabled else None
-            estimate = self.gaze_estimator.estimate(observation)
-            if estimate is not None:
-                self.last_point = estimate.screen_point
-            self.overlay.prepare_for_capture()
-            self.app.processEvents(QtCore.QEventLoop.ProcessEventsFlag.ExcludeUserInputEvents)
+            if observation is not None and observation.timestamp != self._last_observation_timestamp:
+                self._last_observation_timestamp = observation.timestamp
+                estimate = self.gaze_estimator.estimate(observation)
+                if estimate is not None:
+                    self.last_point = estimate.screen_point
+                    self._last_gaze_point = estimate.screen_point
+
+            # The overlay must be hidden for the screen grab. Do not call
+            # processEvents() here: yielding to Qt between hide/capture/show
+            # introduces visible jitter and can re-enter the timer.
+            if self.overlay.isVisible() and not self.overlay._calibrating and not self.overlay._excluded:
+                self.overlay.prepare_for_capture()
+                overlay_hidden = True
+
             frame = self.renderer.capture_screen()
             processed = self.renderer.render_spotlight(
                 frame,
-                self.last_point,
+                self._last_gaze_point,
                 self.radius,
                 int(self.settings.get("brightness_reduction")),
                 int(self.settings.get("spotlight_softness")),
                 int(self.settings.get("spotlight_opacity")),
             )
-            self.overlay.restore_after_capture()
+
+            if overlay_hidden:
+                self.overlay.restore_after_capture()
+
             self.overlay.update_frame(processed)
             self._frame_count += 1
             elapsed = time.perf_counter() - self._fps_started
@@ -577,6 +596,8 @@ class PrivacyController(QtCore.QObject):
                 self._frame_count = 0
                 self._fps_started = time.perf_counter()
         finally:
+            if overlay_hidden and self.overlay.isHidden():
+                self.overlay.restore_after_capture()
             self._frame_busy = False
 
     def emit_status(self) -> None:

@@ -30,6 +30,8 @@ class CalibrationMapper:
     def __init__(self, screen_size: Tuple[int, int]) -> None:
         self.screen_width, self.screen_height = screen_size
         self.samples: Dict[str, CalibrationSample] = {}
+        self._coefficients: Optional[np.ndarray] = None
+        self._rmse: Optional[float] = None
 
     @classmethod
     def build_grid(cls, screen_size: Tuple[int, int]) -> List[CalibrationPoint]:
@@ -53,6 +55,8 @@ class CalibrationMapper:
 
     def clear(self) -> None:
         self.samples.clear()
+        self._coefficients = None
+        self._rmse = None
 
     def load(self, path: Path = CALIBRATION_FILE) -> bool:
         if not path.exists():
@@ -80,6 +84,7 @@ class CalibrationMapper:
             return False
 
         self.samples = loaded_samples
+        self._fit_regression()
         return self.is_complete()
 
     def save(self, path: Path = CALIBRATION_FILE) -> None:
@@ -104,6 +109,42 @@ class CalibrationMapper:
         gaze_vector: Tuple[float, float],
     ) -> None:
         self.samples[label] = CalibrationSample(label, screen_point, gaze_vector)
+        self._fit_regression()
+
+    def _fit_regression(self) -> None:
+        """Fit a quadratic gaze-to-screen model from the calibration samples."""
+        if len(self.samples) < 6:
+            self._coefficients = None
+            self._rmse = None
+            return
+
+        vectors = np.asarray(
+            [sample.gaze_vector for sample in self.samples.values()],
+            dtype=np.float64,
+        )
+        points = np.asarray(
+            [sample.screen_point for sample in self.samples.values()],
+            dtype=np.float64,
+        )
+        x = vectors[:, 0]
+        y = vectors[:, 1]
+        design = np.column_stack(
+            [np.ones(len(vectors)), x, y, x * y, x * x, y * y]
+        )
+
+        try:
+            coefficients, _, _, _ = np.linalg.lstsq(
+                design, points, rcond=None
+            )
+        except np.linalg.LinAlgError:
+            self._coefficients = None
+            self._rmse = None
+            return
+
+        predicted = design @ coefficients
+        errors = np.linalg.norm(predicted - points, axis=1)
+        self._coefficients = coefficients
+        self._rmse = float(np.sqrt(np.mean(errors ** 2)))
 
     def is_complete(self) -> bool:
         return self.required_labels().issubset(self.samples)
@@ -114,7 +155,16 @@ class CalibrationMapper:
             y = int(np.clip(gaze_vector[1], 0.0, 1.0) * self.screen_height)
             return x, y
 
-        if self.is_complete():
+        target = np.asarray(gaze_vector, dtype=np.float64)
+
+        if self._coefficients is not None and self.is_complete():
+            x, y = target
+            features = np.array(
+                [1.0, x, y, x * y, x * x, y * y],
+                dtype=np.float64,
+            )
+            mapped = features @ self._coefficients
+        elif self.is_complete():
             mapped = self._grid_map(gaze_vector)
         else:
             mapped = self._weighted_map(gaze_vector)
@@ -122,6 +172,9 @@ class CalibrationMapper:
         mapped[0] = np.clip(mapped[0], 0, self.screen_width - 1)
         mapped[1] = np.clip(mapped[1], 0, self.screen_height - 1)
         return int(mapped[0]), int(mapped[1])
+
+    def calibration_rmse(self) -> Optional[float]:
+        return self._rmse
 
     def _weighted_map(self, gaze_vector: Tuple[float, float]) -> np.ndarray:
         vectors = np.array([sample.gaze_vector for sample in self.samples.values()], dtype=np.float32)

@@ -103,12 +103,12 @@ class FaceTracker:
         with self.lock:
             return self.latest_observation
 
-    def collect_gaze_vector_sample(
+    def collect_gaze_sample(
         self,
-        duration_seconds: float = 0.40,
-    ) -> Optional[Tuple[float, float]]:
+        duration_seconds: float = 0.45,
+    ) -> Optional[tuple[Tuple[float, float], Tuple[float, ...]]]:
         deadline = time.perf_counter() + duration_seconds
-        samples: list[Tuple[float, float]] = []
+        samples: list[tuple[Tuple[float, float], Tuple[float, ...]]] = []
         last_timestamp = -1.0
 
         while time.perf_counter() < deadline:
@@ -120,20 +120,32 @@ class FaceTracker:
                 and observation.confidence >= 0.62
                 and observation.timestamp != last_timestamp
             ):
-                samples.append(observation.gaze_vector)
+                if observation.gaze_features is not None:
+                    samples.append((observation.gaze_vector, observation.gaze_features))
                 last_timestamp = observation.timestamp
             time.sleep(0.006)
 
         if len(samples) < 6:
             return None
 
-        sample_array = np.asarray(samples, dtype=np.float32)
-        center = np.median(sample_array, axis=0)
-        distances = np.linalg.norm(sample_array - center, axis=1)
+        vectors = np.asarray([sample[0] for sample in samples], dtype=np.float32)
+        features = np.asarray([sample[1] for sample in samples], dtype=np.float32)
+        center = np.median(vectors, axis=0)
+        distances = np.linalg.norm(vectors - center, axis=1)
         cutoff = np.percentile(distances, 80)
-        trimmed = sample_array[distances <= cutoff]
-        median_vector = np.median(trimmed if len(trimmed) >= 4 else sample_array, axis=0)
-        return float(median_vector[0]), float(median_vector[1])
+        keep = distances <= cutoff
+        if int(keep.sum()) < 4:
+            keep = np.ones(len(samples), dtype=bool)
+        median_vector = np.median(vectors[keep], axis=0)
+        median_features = np.median(features[keep], axis=0)
+        return (
+            (float(median_vector[0]), float(median_vector[1])),
+            tuple(float(value) for value in median_features),
+        )
+
+    def collect_gaze_vector_sample(self, duration_seconds: float = 0.45) -> Optional[Tuple[float, float]]:
+        sample = self.collect_gaze_sample(duration_seconds)
+        return sample[0] if sample else None
 
     def _open_camera(self) -> Optional[cv2.VideoCapture]:
         capture = cv2.VideoCapture(self.camera_index, cv2.CAP_DSHOW)

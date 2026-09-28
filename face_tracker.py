@@ -8,12 +8,11 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
-
-CAMERA_WIDTH = 1920
-CAMERA_HEIGHT = 1080
-CAMERA_FPS = 60
-PROCESS_WIDTH = 960
-PROCESS_HEIGHT = 540
+CAMERA_WIDTH = 1280
+CAMERA_HEIGHT = 720
+CAMERA_FPS = 30
+PROCESS_WIDTH = 640
+PROCESS_HEIGHT = 360
 
 LEFT_IRIS = [468, 469, 470, 471, 472]
 RIGHT_IRIS = [473, 474, 475, 476, 477]
@@ -40,7 +39,7 @@ FACE_3D_MODEL = np.array(
 )
 
 
-@dataclass
+@dataclass(frozen=True)
 class FaceObservation:
     timestamp: float
     frame_size: Tuple[int, int]
@@ -66,7 +65,7 @@ class FaceTracker:
         self.lock = threading.Lock()
         self._face_mesh = None
         self._gaze_vector_history: list[np.ndarray] = []
-        self._history_limit = 4
+        self._history_limit = 3
         self._neutral_pitch = 0.0
         self._neutral_yaw = 0.0
         self._neutral_head_offset = np.zeros(2, dtype=np.float32)
@@ -80,6 +79,7 @@ class FaceTracker:
         self._neutral_yaw = 0.0
         self._neutral_head_offset = np.zeros(2, dtype=np.float32)
         self._neutral_ready = False
+        self.latest_observation = None
         self.running = True
         self.thread = threading.Thread(target=self._worker, daemon=True)
         self.thread.start()
@@ -87,7 +87,7 @@ class FaceTracker:
     def stop(self) -> None:
         self.running = False
         if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.5)
+            self.thread.join(timeout=1.0)
         self.thread = None
         if self._face_mesh is not None:
             self._face_mesh.close()
@@ -102,21 +102,34 @@ class FaceTracker:
 
     def collect_gaze_vector_sample(
         self,
-        duration_seconds: float = 0.30,
+        duration_seconds: float = 0.40,
     ) -> Optional[Tuple[float, float]]:
-        deadline = time.time() + duration_seconds
-        samples = []
-        while time.time() < deadline:
+        deadline = time.perf_counter() + duration_seconds
+        samples: list[Tuple[float, float]] = []
+        last_timestamp = -1.0
+
+        while time.perf_counter() < deadline:
             observation = self.get_latest_observation()
-            if observation and observation.gaze_vector and not observation.blink:
+            if (
+                observation
+                and observation.gaze_vector
+                and not observation.blink
+                and observation.confidence >= 0.62
+                and observation.timestamp != last_timestamp
+            ):
                 samples.append(observation.gaze_vector)
-            time.sleep(0.004)
+                last_timestamp = observation.timestamp
+            time.sleep(0.006)
 
         if len(samples) < 6:
             return None
 
-        sample_array = np.array(samples, dtype=np.float32)
-        median_vector = np.median(sample_array, axis=0)
+        sample_array = np.asarray(samples, dtype=np.float32)
+        center = np.median(sample_array, axis=0)
+        distances = np.linalg.norm(sample_array - center, axis=1)
+        cutoff = np.percentile(distances, 80)
+        trimmed = sample_array[distances <= cutoff]
+        median_vector = np.median(trimmed if len(trimmed) >= 4 else sample_array, axis=0)
         return float(median_vector[0]), float(median_vector[1])
 
     def _open_camera(self) -> Optional[cv2.VideoCapture]:
@@ -142,14 +155,14 @@ class FaceTracker:
         self._face_mesh = mp.solutions.face_mesh.FaceMesh(
             max_num_faces=1,
             refine_landmarks=True,
-            min_detection_confidence=0.45,
-            min_tracking_confidence=0.6,
+            min_detection_confidence=0.50,
+            min_tracking_confidence=0.65,
         )
 
         while self.running:
             ok, frame = self.capture.read()
             if not ok:
-                time.sleep(0.004)
+                time.sleep(0.003)
                 continue
 
             frame = cv2.flip(frame, 1)
@@ -158,7 +171,7 @@ class FaceTracker:
                 self.latest_observation = observation
 
     def _process_frame(self, frame: np.ndarray) -> FaceObservation:
-        timestamp = time.time()
+        timestamp = time.perf_counter()
         frame_height, frame_width = frame.shape[:2]
 
         process_frame = cv2.resize(
@@ -194,7 +207,7 @@ class FaceTracker:
 
         eye_width = max((left_eye_width + right_eye_width) / 2.0, 1.0)
         eye_height = max((left_eye_height + right_eye_height) / 2.0, 1.0)
-        iris_center = (np.array(left_pupil, dtype=np.float32) + np.array(right_pupil, dtype=np.float32)) / 2.0
+        iris_center = (np.asarray(left_pupil, dtype=np.float32) + np.asarray(right_pupil, dtype=np.float32)) / 2.0
         eye_center = (left_eye_center + right_eye_center) / 2.0
         eye_offset = (iris_center - eye_center) / np.array([eye_width, eye_height], dtype=np.float32)
 
@@ -215,13 +228,18 @@ class FaceTracker:
             self._eye_aspect_ratio(points, LEFT_EYE_CONTOUR)
             + self._eye_aspect_ratio(points, RIGHT_EYE_CONTOUR)
         ) / 2.0
-        blink = ear < 0.19
+        blink = ear < 0.185
+
+        yaw_error = abs(adjusted_yaw)
+        pitch_error = abs(adjusted_pitch)
+        eye_motion = float(np.linalg.norm(eye_offset))
         confidence = float(
             np.clip(
-                1.05
-                - (abs(adjusted_yaw) + abs(adjusted_pitch)) * 0.10
-                - np.linalg.norm(eye_offset) * 0.05,
-                0.45,
+                1.0
+                - (yaw_error * 0.16)
+                - (pitch_error * 0.16)
+                - (eye_motion * 0.08),
+                0.0,
                 1.0,
             )
         )
@@ -242,37 +260,29 @@ class FaceTracker:
         )
 
     def _stabilize_gaze_vector(self, raw_x: float, raw_y: float) -> Tuple[float, float]:
-        vector = np.array([raw_x, raw_y], dtype=np.float32)
+        vector = np.asarray([raw_x, raw_y], dtype=np.float32)
         self._gaze_vector_history.append(vector)
         if len(self._gaze_vector_history) > self._history_limit:
             self._gaze_vector_history.pop(0)
 
-        history = np.stack(self._gaze_vector_history, axis=0)
-        median = np.median(history, axis=0)
         if len(self._gaze_vector_history) == 1:
             stabilized = vector
         else:
-            stabilized = (0.68 * vector) + (0.32 * median)
+            history = np.stack(self._gaze_vector_history, axis=0)
+            median = np.median(history, axis=0)
+            stabilized = (0.78 * vector) + (0.22 * median)
+
         return float(stabilized[0]), float(stabilized[1])
 
-    def _update_neutral_pose(
-        self,
-        yaw: float,
-        pitch: float,
-        head_offset: np.ndarray,
-    ) -> None:
-        alpha = 0.015 if self._neutral_ready else 0.08
+    def _update_neutral_pose(self, yaw: float, pitch: float, head_offset: np.ndarray) -> None:
+        alpha = 0.035 if not self._neutral_ready else 0.004
         self._neutral_yaw = ((1.0 - alpha) * self._neutral_yaw) + (alpha * yaw)
         self._neutral_pitch = ((1.0 - alpha) * self._neutral_pitch) + (alpha * pitch)
         self._neutral_head_offset = ((1.0 - alpha) * self._neutral_head_offset) + (alpha * head_offset)
         self._neutral_ready = True
 
-    def _estimate_head_pose(
-        self,
-        points: np.ndarray,
-        frame_width: int,
-        frame_height: int,
-    ) -> Tuple[float, float, float]:
+    @staticmethod
+    def _estimate_head_pose(points: np.ndarray, frame_width: int, frame_height: int) -> Tuple[float, float, float]:
         image_points = np.array(
             [
                 points[NOSE_TIP],
@@ -322,11 +332,7 @@ class FaceTracker:
         return float(yaw), float(pitch), float(roll)
 
     @staticmethod
-    def _empty_observation(
-        timestamp: float,
-        frame_width: int,
-        frame_height: int,
-    ) -> FaceObservation:
+    def _empty_observation(timestamp: float, frame_width: int, frame_height: int) -> FaceObservation:
         return FaceObservation(
             timestamp=timestamp,
             frame_size=(frame_width, frame_height),

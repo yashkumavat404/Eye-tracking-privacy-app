@@ -22,6 +22,7 @@ class CalibrationSample:
     label: str
     screen_point: Tuple[int, int]
     gaze_vector: Tuple[float, float]
+    gaze_features: Optional[Tuple[float, ...]] = None
 
 
 class CalibrationMapper:
@@ -32,6 +33,7 @@ class CalibrationMapper:
         self.samples: Dict[str, CalibrationSample] = {}
         self._coefficients: Optional[np.ndarray] = None
         self._rmse: Optional[float] = None
+        self._feature_coefficients: Optional[np.ndarray] = None
 
     @classmethod
     def build_grid(cls, screen_size: Tuple[int, int]) -> List[CalibrationPoint]:
@@ -57,6 +59,7 @@ class CalibrationMapper:
         self.samples.clear()
         self._coefficients = None
         self._rmse = None
+        self._feature_coefficients = None
 
     def load(self, path: Path = CALIBRATION_FILE) -> bool:
         if not path.exists():
@@ -79,7 +82,9 @@ class CalibrationMapper:
                 label = row["label"]
                 screen_point = (int(row["screen_point"][0]), int(row["screen_point"][1]))
                 gaze_vector = (float(row["gaze_vector"][0]), float(row["gaze_vector"][1]))
-                loaded_samples[label] = CalibrationSample(label, screen_point, gaze_vector)
+                features = row.get("gaze_features")
+                gaze_features = tuple(float(v) for v in features) if features else None
+                loaded_samples[label] = CalibrationSample(label, screen_point, gaze_vector, gaze_features)
         except (KeyError, TypeError, ValueError, IndexError):
             return False
 
@@ -96,6 +101,7 @@ class CalibrationMapper:
                     "label": sample.label,
                     "screen_point": [sample.screen_point[0], sample.screen_point[1]],
                     "gaze_vector": [sample.gaze_vector[0], sample.gaze_vector[1]],
+                    "gaze_features": list(sample.gaze_features) if sample.gaze_features else None,
                 }
                 for sample in self.samples.values()
             ],
@@ -107,8 +113,9 @@ class CalibrationMapper:
         label: str,
         screen_point: Tuple[int, int],
         gaze_vector: Tuple[float, float],
+        gaze_features: Optional[Tuple[float, ...]] = None,
     ) -> None:
-        self.samples[label] = CalibrationSample(label, screen_point, gaze_vector)
+        self.samples[label] = CalibrationSample(label, screen_point, gaze_vector, gaze_features)
         self._fit_regression()
 
     def _fit_regression(self) -> None:
@@ -146,6 +153,20 @@ class CalibrationMapper:
         self._coefficients = coefficients
         self._rmse = float(np.sqrt(np.mean(errors ** 2)))
 
+        feature_rows = [sample.gaze_features for sample in self.samples.values()]
+        if feature_rows and all(row is not None for row in feature_rows):
+            feature_matrix = np.asarray(feature_rows, dtype=np.float64)
+            design_features = np.column_stack([np.ones(len(feature_matrix)), feature_matrix])
+            try:
+                feature_coefficients, _, _, _ = np.linalg.lstsq(
+                    design_features, points, rcond=None
+                )
+                self._feature_coefficients = feature_coefficients
+            except np.linalg.LinAlgError:
+                self._feature_coefficients = None
+        else:
+            self._feature_coefficients = None
+
     def is_complete(self) -> bool:
         return self.required_labels().issubset(self.samples)
 
@@ -157,13 +178,12 @@ class CalibrationMapper:
 
         target = np.asarray(gaze_vector, dtype=np.float64)
 
-        if self._coefficients is not None and self.is_complete():
-            x, y = target
-            features = np.array(
-                [1.0, x, y, x * y, x * x, y * y],
-                dtype=np.float64,
-            )
-            mapped = features @ self._coefficients
+        if self._feature_coefficients is not None and self.is_complete():
+            # Legacy callers still use the 2D vector; feature-aware mapping is used
+            # through map_observation() below.
+            mapped = self._map_quadratic(target)
+        elif self._coefficients is not None and self.is_complete():
+            mapped = self._map_quadratic(target)
         elif self.is_complete():
             mapped = self._grid_map(gaze_vector)
         else:
@@ -173,8 +193,22 @@ class CalibrationMapper:
         mapped[1] = np.clip(mapped[1], 0, self.screen_height - 1)
         return int(mapped[0]), int(mapped[1])
 
-    def calibration_rmse(self) -> Optional[float]:
-        return self._rmse
+    def map_observation(self, gaze_vector: Tuple[float, float], gaze_features: Optional[Tuple[float, ...]]) -> Tuple[int, int]:
+        if self._feature_coefficients is not None and self.is_complete() and gaze_features is not None:
+            feature_array = np.asarray(gaze_features, dtype=np.float64)
+            design = np.concatenate(([1.0], feature_array))
+            mapped = design @ self._feature_coefficients
+            mapped[0] = np.clip(mapped[0], 0, self.screen_width - 1)
+            mapped[1] = np.clip(mapped[1], 0, self.screen_height - 1)
+            return int(mapped[0]), int(mapped[1])
+        return self.map_vector_to_screen(gaze_vector)
+
+    def _map_quadratic(self, target: np.ndarray) -> np.ndarray:
+        x, y = target
+        features = np.array([1.0, x, y, x * y, x * x, y * y], dtype=np.float64)
+        return features @ self._coefficients
+
+    def calibration_rmse(self) -> Optional[float]:        return self._rmse
 
     def _weighted_map(self, gaze_vector: Tuple[float, float]) -> np.ndarray:
         vectors = np.array([sample.gaze_vector for sample in self.samples.values()], dtype=np.float32)

@@ -463,6 +463,10 @@ class PrivacyController(QtCore.QObject):
 
         if self.privacy_enabled:
             self.enable_privacy_mode(True)
+        elif self.eye_tracking_enabled:
+            # Keep the tracker available for diagnostics and calibration even
+            # when privacy rendering is currently disabled.
+            self.face_tracker.start()
 
     def _screen_center(self) -> Tuple[int, int]:
         return self.renderer.screen_size[0] // 2, self.renderer.screen_size[1] // 2
@@ -481,7 +485,8 @@ class PrivacyController(QtCore.QObject):
             self.notification_requested.emit("Privacy mode enabled", "Spotlight protection is running.")
         else:
             self.frame_timer.stop()
-            self.face_tracker.stop()
+            if not self.eye_tracking_enabled:
+                self.face_tracker.stop()
             self.overlay.hide_privacy()
             self.notification_requested.emit("Privacy mode disabled", "Screen dimming is off.")
         self.emit_status()
@@ -536,7 +541,8 @@ class PrivacyController(QtCore.QObject):
         if self.privacy_enabled:
             self.frame_timer.start()
         else:
-            self.face_tracker.stop()
+            if not self.eye_tracking_enabled:
+                self.face_tracker.stop()
             self.overlay.hide()
 
     def reset_calibration(self) -> None:
@@ -635,7 +641,8 @@ class PrivacyController(QtCore.QObject):
         if self.privacy_enabled:
             self.frame_timer.start()
         else:
-            self.face_tracker.stop()
+            if not self.eye_tracking_enabled:
+                self.face_tracker.stop()
             self.overlay.hide()
         self.calibration_changed.emit({"state": "Completed", "progress": 100, "accuracy": self._accuracy_percent()})
         self.notification_requested.emit("Calibration completed", "Gaze mapping has been saved.")

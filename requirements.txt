@@ -6,3 +6,5 @@ PyQt6==6.7.1
 pyqtgraph==0.13.7
 psutil==5.9.8
 mss==9.0.1
+
+pyinstaller>=6.10,<7

@@ -172,6 +172,9 @@ class PrivacyOverlay(QtWidgets.QWidget):
     def hide_privacy(self) -> None:
         self.hide()
 
+    def is_capture_safe_to_hide(self) -> bool:
+        return self.isVisible() and not self._calibrating and not self._excluded
+
     def prepare_for_capture(self) -> None:
         if self._calibrating or self._excluded:
             return
@@ -571,7 +574,7 @@ class PrivacyController(QtCore.QObject):
             # The overlay must be hidden for the screen grab. Do not call
             # processEvents() here: yielding to Qt between hide/capture/show
             # introduces visible jitter and can re-enter the timer.
-            if self.overlay.isVisible() and not self.overlay._calibrating and not self.overlay._excluded:
+            if self.overlay.is_capture_safe_to_hide():
                 self.overlay.prepare_for_capture()
                 overlay_hidden = True
 

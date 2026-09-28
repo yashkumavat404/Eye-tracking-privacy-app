@@ -51,7 +51,7 @@ class GazeEstimator:
         if observation is None or not observation.face_detected or observation.gaze_vector is None:
             return None
 
-        raw_point = self.mapper.map_vector_to_screen(observation.gaze_vector)
+        raw_point = self.mapper.map_observation(observation.gaze_vector, observation.gaze_features)
         if observation.blink:
             self.filter.freeze(observation.timestamp)
             raw_point = self.last_point

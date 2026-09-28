@@ -71,6 +71,8 @@ class FaceTracker:
         self._neutral_yaw = 0.0
         self._neutral_head_offset = np.zeros(2, dtype=np.float32)
         self._neutral_ready = False
+        self._neutral_samples = 0
+        self._neutral_warmup_frames = 30
         self._feature_history: list[np.ndarray] = []
         self._frame_count = 0
         self._fps_started = time.perf_counter()
@@ -355,6 +357,7 @@ class FaceTracker:
             "confidence": observation.confidence,
             "processing_fps": self.processing_fps,
             "gaze_motion": motion,
+            "neutral_ready": self._neutral_ready,
         }
 
     def _stabilize_gaze_vector(self, raw_x: float, raw_y: float) -> Tuple[float, float]:
@@ -373,11 +376,20 @@ class FaceTracker:
         return float(stabilized[0]), float(stabilized[1])
 
     def _update_neutral_pose(self, yaw: float, pitch: float, head_offset: np.ndarray) -> None:
-        alpha = 0.035 if not self._neutral_ready else 0.004
+        # Establish the neutral face/head baseline only during the initial warm-up.
+        # Continuously adapting it would absorb intentional gaze/head movement and
+        # make the gaze signal appear almost static.
+        if self._neutral_ready:
+            return
+
+        self._neutral_samples += 1
+        alpha = 1.0 / float(self._neutral_samples)
         self._neutral_yaw = ((1.0 - alpha) * self._neutral_yaw) + (alpha * yaw)
         self._neutral_pitch = ((1.0 - alpha) * self._neutral_pitch) + (alpha * pitch)
         self._neutral_head_offset = ((1.0 - alpha) * self._neutral_head_offset) + (alpha * head_offset)
-        self._neutral_ready = True
+
+        if self._neutral_samples >= self._neutral_warmup_frames:
+            self._neutral_ready = True
 
     @staticmethod
     def _estimate_head_pose(points: np.ndarray, frame_width: int, frame_height: int) -> Tuple[float, float, float]:

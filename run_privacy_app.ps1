@@ -17,4 +17,4 @@ Write-Host "Checking and installing required libraries..."
 & $venvPython -m pip install -r requirements.txt
 
 Write-Host "Starting Privacy App..."
-& $venvPython main.py
+& $venvPython privacy_dashboard.py

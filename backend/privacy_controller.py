@@ -444,7 +444,7 @@ class PrivacyController(QtCore.QObject):
         self.frame_timer = QtCore.QTimer(self)
         self.frame_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
         # Keep the desktop renderer responsive without tying it to the webcam inference rate.
-        self.frame_timer.setInterval(16)
+        self.frame_timer.setInterval(33)
         self.frame_timer.timeout.connect(self._update_overlay_frame)
         self.status_timer = QtCore.QTimer(self)
         self.status_timer.setInterval(500)
@@ -492,7 +492,9 @@ class PrivacyController(QtCore.QObject):
     def set_eye_tracking_enabled(self, enabled: bool) -> None:
         self.eye_tracking_enabled = enabled
         self.settings.set("eye_tracking_enabled", enabled)
-        if self.privacy_enabled and enabled:
+        if enabled:
+            # Tracking is independent from privacy rendering so the diagnostics
+            # and calibration can verify the camera/gaze pipeline on their own.
             self.face_tracker.start()
         elif not self.calibration.active:
             self.face_tracker.stop()
@@ -721,6 +723,7 @@ class PrivacyController(QtCore.QObject):
                 "blink": diagnostics["blink"],
                 "tracking_fps": diagnostics["processing_fps"],
                 "gaze_motion": diagnostics["gaze_motion"],
+                "neutral_ready": diagnostics.get("neutral_ready", False),
                 "radius": self.radius,
                 "fps": self.fps,
                 "acceleration": self.renderer.acceleration_label,

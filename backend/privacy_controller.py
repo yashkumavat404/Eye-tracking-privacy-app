@@ -611,8 +611,12 @@ class PrivacyController(QtCore.QObject):
 
     def finish_calibration(self) -> None:
         self.calibration.stop()
+        self._calibration_collecting = False
+        self.calibration_timer.stop()
         self.overlay.end_calibration()
-        if not self.privacy_enabled:
+        if self.privacy_enabled:
+            self.frame_timer.start()
+        else:
             self.face_tracker.stop()
             self.overlay.hide()
         self.calibration_changed.emit({"state": "Completed", "progress": 100, "accuracy": self._accuracy_percent()})
@@ -698,6 +702,7 @@ class PrivacyController(QtCore.QObject):
             return
         self._shutting_down = True
         self.frame_timer.stop()
+        self.calibration_timer.stop()
         self.status_timer.stop()
         self.face_tracker.stop()
         self.overlay.close()

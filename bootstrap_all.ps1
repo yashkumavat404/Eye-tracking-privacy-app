@@ -6,6 +6,12 @@
 
 $ErrorActionPreference = "Stop"
 
+function Invoke-Checked([string]$Label, [scriptblock]$Action) {
+    Write-Step $Label
+    & $Action
+    if ($LASTEXITCODE -ne 0) { throw "$Label failed with exit code $LASTEXITCODE." }
+}
+
 function Write-Step([string]$Message) { Write-Host "`n==> $Message" -ForegroundColor Cyan }
 function Test-Command([string]$Name) { try { Get-Command $Name -ErrorAction Stop | Out-Null; return $true } catch { return $false } }
 function Refresh-Path { $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine"); $userPath = [Environment]::GetEnvironmentVariable("Path", "User"); $env:Path = "$machinePath;$userPath" }
@@ -45,21 +51,16 @@ if (-not (Test-Path $venvPath)) { Write-Step "Creating project virtual environme
 
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 $venvPip = Join-Path $venvPath "Scripts\pip.exe"
-Write-Step "Upgrading packaging tools"
-& $venvPython -m pip install --upgrade pip setuptools wheel
-Write-Step "Installing project dependencies"
-& $venvPip install -r (Join-Path $projectRoot "requirements.txt")
+Invoke-Checked "Upgrading packaging tools" { & $venvPython -m pip install --upgrade pip setuptools wheel }
+Invoke-Checked "Installing project dependencies" { & $venvPip install -r (Join-Path $projectRoot "requirements.txt") }
 
 if ($InstallCudaTorch) {
-    Write-Step "Installing CUDA-enabled PyTorch"
-    & $venvPip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128
+    Invoke-Checked "Installing CUDA-enabled PyTorch" { & $venvPip install --upgrade torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu128 }
 } else {
-    Write-Step "Installing default PyTorch"
-    & $venvPip install --upgrade torch torchvision torchaudio
+    Invoke-Checked "Installing default PyTorch" { & $venvPip install --upgrade torch torchvision torchaudio }
 }
 
-Write-Step "Verifying core packages"
-& $venvPython -c "import sys, cv2, mediapipe, mss, numpy, torch; from PyQt6 import QtCore; print('python', sys.version.split()[0]); print('opencv', cv2.__version__); print('mediapipe', mediapipe.__version__); print('mss', mss.__version__); print('numpy', numpy.__version__); print('pyqt6', QtCore.QT_VERSION_STR); print('torch', torch.__version__)"
+Invoke-Checked "Verifying core packages" { & $venvPython -c "import sys, cv2, mediapipe, mss, numpy, torch; from PyQt6 import QtCore; print('python', sys.version.split()[0]); print('opencv', cv2.__version__); print('mediapipe', mediapipe.__version__); print('mss', mss.__version__); print('numpy', numpy.__version__); print('pyqt6', QtCore.QT_VERSION_STR); print('torch', torch.__version__)" }
 
 if (-not $SkipCudaCheck) {
     Write-Step "Checking CUDA availability in PyTorch"

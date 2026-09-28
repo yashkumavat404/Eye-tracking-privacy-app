@@ -16,12 +16,12 @@ class ExponentialSmoothingFilter:
 
     def __init__(
         self,
-        alpha_slow: float = 0.72,
+        alpha_slow: float = 0.86,
         alpha_fast: float = 0.96,
-        fast_threshold: float = 42.0,
+        fast_threshold: float = 24.0,
         freeze_duration: float = 0.045,
         deadzone: float = 0.75,
-        prediction_gain: float = 0.14,
+        prediction_gain: float = 0.10,
     ) -> None:
         self.alpha_slow = alpha_slow
         self.alpha_fast = alpha_fast

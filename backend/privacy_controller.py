@@ -70,19 +70,26 @@ class SpotlightRenderer:
         softness: int,
         opacity: int,
     ) -> np.ndarray:
+        """Keep the spotlight region at native resolution and blur only its surroundings."""
         height, width = frame.shape[:2]
         scale = self.render_scale
         small_w = max(1, int(width * scale))
         small_h = max(1, int(height * scale))
 
+        # The expensive blur is performed on a reduced image.
         small = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_AREA)
         blur_size = 9 + int(np.clip(softness, 0, 100) * 0.18)
         blur_size |= 1
-        blurred = cv2.GaussianBlur(
+        blurred_small = cv2.GaussianBlur(
             small,
             (blur_size, blur_size),
             0,
             borderType=cv2.BORDER_REPLICATE,
+        )
+        blurred_native = cv2.resize(
+            blurred_small,
+            (width, height),
+            interpolation=cv2.INTER_LINEAR,
         )
 
         point = (
@@ -91,6 +98,7 @@ class SpotlightRenderer:
         )
         scaled_radius = max(8, int(radius * scale))
         key = (small_w, small_h, point[0], point[1], scaled_radius, int(softness))
+
         if key != self._mask_key:
             mask = np.zeros((small_h, small_w), dtype=np.uint8)
             cv2.circle(mask, point, scaled_radius, 255, -1, lineType=cv2.LINE_AA)
@@ -101,16 +109,24 @@ class SpotlightRenderer:
             )
             self._mask_key = key
 
-        alpha = self._mask_small[..., None] * np.clip(opacity / 100.0, 0.1, 1.0)
-        reduction = np.clip(brightness_reduction / 100.0, 0.0, 1.0)
-        background = blurred.astype(np.float32) * (1.0 - 0.72 * reduction)
+        # Upscale only the mask. The foreground remains the original screen pixels.
+        alpha = cv2.resize(
+            self._mask_small,
+            (width, height),
+            interpolation=cv2.INTER_LINEAR,
+        )[..., None]
+        alpha *= np.clip(opacity / 100.0, 0.1, 1.0)
 
+        reduction = np.clip(brightness_reduction / 100.0, 0.0, 1.0)
+        background = blurred_native.astype(np.float32) * (1.0 - 0.72 * reduction)
+
+        # Native-resolution foreground preserves readable text, icons and UI details.
         composed = (
-            small.astype(np.float32) * alpha
+            frame.astype(np.float32) * alpha
             + background * (1.0 - alpha)
         ).clip(0, 255).astype(np.uint8)
 
-        return cv2.resize(composed, (width, height), interpolation=cv2.INTER_LINEAR)
+        return composed
 
     @staticmethod
     def _detect_acceleration_label() -> str:

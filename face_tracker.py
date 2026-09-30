@@ -326,8 +326,12 @@ class FaceTracker:
             eye_offset = left_eye_offset if left_detection is not None else right_eye_offset
 
         pupil_confidence = float(max(d.confidence for d in detections))
-        raw_x = 0.5 + (eye_offset[0] * 3.0)
-        raw_y = 0.5 + (eye_offset[1] * 3.0)
+        # Keep the measured pupil-in-eye offset in native normalized units.
+        # Screen expansion is learned from the 25-point calibration model,
+        # not from a fixed multiplier. This prevents center compression and
+        # lets the calibrated edge/corner samples determine the output.
+        raw_x = float(eye_offset[0])
+        raw_y = float(eye_offset[1])
         stabilized_vector = self._stabilize_gaze_vector(raw_x, raw_y)
         self._gaze_motion_history.append(np.asarray(stabilized_vector, dtype=np.float32))
         if len(self._gaze_motion_history) > 30:

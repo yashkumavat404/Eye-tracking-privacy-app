@@ -208,6 +208,7 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self._target_button.hide()
         self._target: Optional[Tuple[int, int]] = None
         self._guide_points: list[Tuple[int, int]] = []
+        self._calibration_screen_size: Optional[Tuple[int, int]] = None
         self._excluded = False
         self._hidden_for_capture = False
         self._calibrating = False
@@ -257,6 +258,21 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self._image.setPixmap(QtGui.QPixmap.fromImage(image))
         self._status.raise_()
 
+    def _map_calibration_point(
+        self,
+        point: Tuple[int, int],
+        screen_size: Tuple[int, int],
+    ) -> Tuple[int, int]:
+        screen_width, screen_height = screen_size
+        scale_x = self.width() / max(float(screen_width), 1.0)
+        scale_y = self.height() / max(float(screen_height), 1.0)
+        x = int(round(point[0] * scale_x))
+        y = int(round(point[1] * scale_y))
+        return (
+            max(0, min(x, max(0, self.width() - 1))),
+            max(0, min(y, max(0, self.height() - 1))),
+        )
+
     def _position_target_button(self) -> None:
         if self._target is None:
             self._target_button.hide()
@@ -268,10 +284,20 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self._target_button.show()
         self._target_button.raise_()
 
-    def begin_calibration(self, target: Tuple[int, int], guide_points: list[Tuple[int, int]], text: str) -> None:
+    def begin_calibration(
+        self,
+        target: Tuple[int, int],
+        guide_points: list[Tuple[int, int]],
+        text: str,
+        screen_size: Tuple[int, int],
+    ) -> None:
         self._calibrating = True
-        self._target = target
-        self._guide_points = guide_points
+        self._calibration_screen_size = screen_size
+        self._target = self._map_calibration_point(target, screen_size)
+        self._guide_points = [
+            self._map_calibration_point(point, screen_size)
+            for point in guide_points
+        ]
         self.set_status_text(text)
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         self._image.clear()
@@ -281,9 +307,19 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self._position_target_button()
         self.update()
 
-    def update_calibration(self, target: Tuple[int, int], guide_points: list[Tuple[int, int]], text: str) -> None:
-        self._target = target
-        self._guide_points = guide_points
+    def update_calibration(
+        self,
+        target: Tuple[int, int],
+        guide_points: list[Tuple[int, int]],
+        text: str,
+        screen_size: Tuple[int, int],
+    ) -> None:
+        self._calibration_screen_size = screen_size
+        self._target = self._map_calibration_point(target, screen_size)
+        self._guide_points = [
+            self._map_calibration_point(point, screen_size)
+            for point in guide_points
+        ]
         self.set_status_text(text)
         self._position_target_button()
         self.update()
@@ -292,6 +328,7 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self._calibrating = False
         self._target = None
         self._guide_points = []
+        self._calibration_screen_size = None
         self._target_button.hide()
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._set_click_through(True)
@@ -646,9 +683,19 @@ class PrivacyController(QtCore.QObject):
             "Look at the dot for a moment, then click it."
         )
         if self.calibration.index == 0:
-            self.overlay.begin_calibration(position, guide_points, text)
+            self.overlay.begin_calibration(
+                position,
+                guide_points,
+                text,
+                self.renderer.screen_size,
+            )
         else:
-            self.overlay.update_calibration(position, guide_points, text)
+            self.overlay.update_calibration(
+                position,
+                guide_points,
+                text,
+                self.renderer.screen_size,
+            )
         self.calibration_changed.emit({"state": "Running", "progress": progress, "accuracy": self._accuracy_percent()})
 
     def _collect_calibration_frames(self) -> None:

@@ -1,0 +1,23 @@
+name: Privacy Eye CI
+
+on:
+  push:
+    branches:
+      - perf/gaze-smooth-desktop
+  pull_request:
+    branches:
+      - main
+      - perf/gaze-smooth-desktop
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install numpy==1.26.4 opencv-python-headless==4.10.0.84 pytest==8.3.5
+      - run: python -m compileall -q .
+      - run: python -m pytest -q tests

@@ -635,8 +635,16 @@ class PrivacyController(QtCore.QObject):
             return
         label, position, message = current
         guide_points = [target[1] for target in self.calibration.targets]
-        progress = int((self.calibration.index / len(self.calibration.targets)) * 100)
-        text = f"{self.calibration.progress_text()}\n{message}\nLook at the dot for a moment, then click it."
+        total = len(self.calibration.targets)
+        if total != 25:
+            raise RuntimeError(f"Calibration grid must contain exactly 25 points, got {total}")
+        current_number = min(self.calibration.index + 1, 25)
+        progress = self.calibration.progress_percent()
+        text = (
+            f"Calibration {current_number}/25\n"
+            f"{message}\n"
+            "Look at the dot for a moment, then click it."
+        )
         if self.calibration.index == 0:
             self.overlay.begin_calibration(position, guide_points, text)
         else:

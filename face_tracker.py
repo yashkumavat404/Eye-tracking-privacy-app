@@ -212,19 +212,30 @@ class FaceTracker:
         timestamp = time.perf_counter()
         frame_height, frame_width = frame.shape[:2]
 
-        process_frame = cv2.resize(
-            frame,
-            (PROCESS_WIDTH, PROCESS_HEIGHT),
-            interpolation=cv2.INTER_AREA,
+        scale = min(
+            1.0,
+            PROCESS_WIDTH / max(float(frame_width), 1.0),
+            PROCESS_HEIGHT / max(float(frame_height), 1.0),
         )
+        process_width = max(1, int(round(frame_width * scale)))
+        process_height = max(1, int(round(frame_height * scale)))
+        if process_width == frame_width and process_height == frame_height:
+            process_frame = frame
+        else:
+            process_frame = cv2.resize(
+                frame,
+                (process_width, process_height),
+                interpolation=cv2.INTER_AREA,
+            )
+
         rgb_frame = cv2.cvtColor(process_frame, cv2.COLOR_BGR2RGB)
         results = self._face_mesh.process(rgb_frame)
 
         if not results.multi_face_landmarks:
             return self._empty_observation(timestamp, frame_width, frame_height)
 
-        scale_x = frame_width / PROCESS_WIDTH
-        scale_y = frame_height / PROCESS_HEIGHT
+        scale_x = frame_width / float(process_width)
+        scale_y = frame_height / float(process_height)
         points = np.array(
             [
                 (landmark.x * PROCESS_WIDTH * scale_x, landmark.y * PROCESS_HEIGHT * scale_y)

@@ -97,7 +97,7 @@ class TrackingPage(QtWidgets.QWidget):
         self.eye_switch = ToggleSwitch(settings.get("eye_tracking_enabled"))
         self.head_switch = ToggleSwitch(settings.get("head_pose_enabled"))
         controls.layout.addLayout(self._switch_row("Eye Tracking", "Enable or disable gaze tracking input.", self.eye_switch))
-        controls.layout.addLayout(self._switch_row("Head Pose Tracking", "Enable or disable head pose contribution.", self.head_switch))
+        controls.layout.addLayout(self._switch_row("Head Pose Diagnostics", "Diagnostic only; head movement never drives gaze.", self.head_switch))
         self.sensitivity = LabeledSlider("Tracking Sensitivity", 0, 100, settings.get("tracking_sensitivity"))
         self.smoothing = LabeledSlider("Smoothing", 0, 100, settings.get("smoothing"))
         self.threshold = LabeledSlider("Confidence Threshold", 0, 100, settings.get("confidence_threshold"))
@@ -117,16 +117,18 @@ class TrackingPage(QtWidgets.QWidget):
         self.pupil_value = QtWidgets.QLabel("L: —   R: —")
         self.pose_value = QtWidgets.QLabel("Y: 0.000   P: 0.000   R: 0.000")
         self.motion_value = QtWidgets.QLabel("0.000")
+        self.pupil_confidence_value = QtWidgets.QLabel("0%")
         self.track_fps_value = QtWidgets.QLabel("0.0")
         self.blink_value = QtWidgets.QLabel("No")
         self.neutral_value = QtWidgets.QLabel("Warming up")
         rows = [
             ("Camera", self.camera_value),
             ("Face", self.face_value),
-            ("Iris landmarks", self.iris_value),
+            ("Pupils", self.iris_value),
             ("Gaze vector", self.gaze_value),
-            ("Iris centers", self.pupil_value),
+            ("Pupil centers", self.pupil_value),
             ("Head pose", self.pose_value),
+            ("Pupil confidence", self.pupil_confidence_value),
             ("Gaze motion", self.motion_value),
             ("Tracker FPS", self.track_fps_value),
             ("Blink", self.blink_value),
@@ -157,6 +159,7 @@ class TrackingPage(QtWidgets.QWidget):
             f"P: {data.get('pitch', 0.0):.3f}   "
             f"R: {data.get('roll', 0.0):.3f}"
         )
+        self.pupil_confidence_value.setText(f"{data.get('pupil_confidence', 0.0) * 100:.0f}%")
         self.motion_value.setText(f"{data.get('gaze_motion', 0.0):.4f}")
         self.track_fps_value.setText(f"{data.get('tracking_fps', 0.0):.1f}")
         self.blink_value.setText("Yes" if data.get("blink") else "No")

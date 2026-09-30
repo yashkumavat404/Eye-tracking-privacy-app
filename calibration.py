@@ -28,7 +28,7 @@ class CalibrationSample:
 
 class CalibrationMapper:
     GRID_SIZE = 5
-    MODEL_VERSION = 3
+    MODEL_VERSION = 5
     # The pupil-only model has six terms and 25 calibration samples. A small
     # ridge term keeps the fit stable without pulling legitimate edge/center
     # gaze positions toward one side of the display.
@@ -46,10 +46,11 @@ class CalibrationMapper:
     @classmethod
     def build_grid(cls, screen_size: Tuple[int, int]) -> List[CalibrationPoint]:
         width, height = screen_size
-        # Keep all 25 targets comfortably inside the drawable display area.
-        # Explicitly generate five rows and five columns: 5 x 5 = 25.
-        margin_x = max(80, int(width * 0.07))
-        margin_y = max(80, int(height * 0.07))
+        # Place calibration targets close to the real display boundaries so the
+        # model learns edge/corner pupil behavior instead of only the center.
+        # Keep a small safety margin so the target remains fully clickable.
+        margin_x = max(32, int(width * 0.025))
+        margin_y = max(32, int(height * 0.025))
         xs = np.linspace(margin_x, width - margin_x, 5, dtype=np.int32)
         ys = np.linspace(margin_y, height - margin_y, 5, dtype=np.int32)
 
@@ -163,22 +164,40 @@ class CalibrationMapper:
         features: Optional[np.ndarray],
         fit_scaler: bool = False,
     ) -> np.ndarray:
-        x = vectors[:, 0]
-        y = vectors[:, 1]
+        if features is None:
+            features = np.column_stack(
+                [
+                    0.5 + vectors[:, 0],
+                    0.5 + vectors[:, 1],
+                    0.5 + vectors[:, 0],
+                    0.5 + vectors[:, 1],
+                ]
+            )
+
+        values = np.asarray(features, dtype=np.float64)
+        if values.ndim != 2 or values.shape[1] != self.GAZE_FEATURE_COUNT:
+            raise ValueError(f"Calibration requires {self.GAZE_FEATURE_COUNT} pupil features")
+
+        # Use binocular pupil position plus a small inter-eye asymmetry term.
+        # This is intentionally low-order: 25 calibration points should define
+        # the screen geometry without allowing webcam noise to create wild
+        # high-order oscillations between neighboring targets.
+        left_x, left_y, right_x, right_y = [values[:, index] for index in range(4)]
+        avg_x = (left_x + right_x) * 0.5
+        avg_y = (left_y + right_y) * 0.5
+        diff_x = left_x - right_x
+        diff_y = left_y - right_y
         parts = [
-            np.ones(len(vectors), dtype=np.float64),
-            x,
-            y,
-            x * x,
-            x * y,
-            y * y,
+            np.ones(len(values), dtype=np.float64),
+            avg_x,
+            avg_y,
+            avg_x * avg_x,
+            avg_y * avg_y,
+            diff_x,
+            diff_y,
         ]
 
-        # Screen mapping deliberately uses only the fused pupil-in-eye vector.
-        # Face position and head pose are useful quality checks, but feeding them
-        # to this model makes a head movement look like a gaze movement.
-        del features, fit_scaler
-
+        del fit_scaler
         return np.column_stack(parts)
 
     def _fit_regression(self) -> None:
@@ -190,10 +209,15 @@ class CalibrationMapper:
         ordered = list(self.samples.values())
         vectors = np.asarray([sample.gaze_vector for sample in ordered], dtype=np.float64)
         points = np.asarray([sample.screen_point for sample in ordered], dtype=np.float64)
+        if any(sample.gaze_features is None for sample in ordered):
+            self._coefficients = None
+            self._rmse = None
+            return
+        features = np.asarray([sample.gaze_features for sample in ordered], dtype=np.float64)
 
         self._feature_mean = None
         self._feature_scale = None
-        design = self._design_matrix(vectors, None)
+        design = self._design_matrix(vectors, features)
 
         try:
             regularization = self.RIDGE_LAMBDA * np.eye(design.shape[1], dtype=np.float64)
@@ -221,8 +245,13 @@ class CalibrationMapper:
 
     def _predict(self, gaze_vector: Tuple[float, float], gaze_features: Optional[Tuple[float, ...]]) -> np.ndarray:
         vector = np.asarray([gaze_vector], dtype=np.float64)
-        del gaze_features
-        design = self._design_matrix(vector, None)
+        if gaze_features is None:
+            return np.asarray(
+                [gaze_vector[0] * self.screen_width, gaze_vector[1] * self.screen_height],
+                dtype=np.float64,
+            )
+        features = np.asarray([gaze_features], dtype=np.float64)
+        design = self._design_matrix(vector, features)
         if self._coefficients is None:
             return np.asarray([gaze_vector[0] * self.screen_width, gaze_vector[1] * self.screen_height], dtype=np.float64)
         return design[0] @ self._coefficients
@@ -247,7 +276,7 @@ class CalibrationMapper:
         gaze_vector: Tuple[float, float],
         gaze_features: Optional[Tuple[float, ...]],
     ) -> Tuple[int, int]:
-        if self._coefficients is not None and self.is_complete():
+        if self._coefficients is not None and self.is_complete() and gaze_features is not None:
             mapped = self._predict(gaze_vector, gaze_features)
         else:
             mapped = np.asarray(self.map_vector_to_screen(gaze_vector), dtype=np.float64)

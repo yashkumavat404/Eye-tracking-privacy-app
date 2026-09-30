@@ -723,7 +723,8 @@ class PrivacyController(QtCore.QObject):
             and observation.gaze_features is not None
             and observation.timestamp != self._calibration_last_timestamp
             and not observation.blink
-            and observation.confidence >= 0.62
+            and observation.pupil_confidence >= 0.50
+            and observation.confidence >= 0.50
         ):
             self._calibration_samples.append(
                 (observation.gaze_vector, observation.gaze_features)
@@ -808,7 +809,7 @@ class PrivacyController(QtCore.QObject):
         self._calibration_samples.clear()
         self._calibration_last_timestamp = -1.0
         self._calibration_sample_started = time.perf_counter()
-        self._calibration_deadline = self._calibration_sample_started + 0.40
+        self._calibration_deadline = self._calibration_sample_started + 0.55
         self._calibration_click_count += 1
         self.calibration_changed.emit({
             "state": f"Sampling point {self.calibration.index + 1}/25...",
@@ -916,7 +917,7 @@ class PrivacyController(QtCore.QObject):
         self.overlay.set_status_text(
             f"Privacy: {'ON' if self.privacy_enabled else 'OFF'} | "
             f"Face: {'YES' if face_detected else 'NO'} | "
-            f"Iris: {'YES' if diagnostics['iris_detected'] else 'NO'} | "
+            f"Pupil: {'YES' if diagnostics['iris_detected'] else 'NO'} | "
             f"Gaze: {gaze_text} | Confidence: {confidence}% | "
             f"Track FPS: {diagnostics['processing_fps']:.1f}"
         )
@@ -932,6 +933,9 @@ class PrivacyController(QtCore.QObject):
                 "gaze_vector": gaze,
                 "left_pupil": diagnostics["left_pupil"],
                 "right_pupil": diagnostics["right_pupil"],
+                "left_pupil_confidence": diagnostics["left_pupil_confidence"],
+                "right_pupil_confidence": diagnostics["right_pupil_confidence"],
+                "pupil_confidence": diagnostics["pupil_confidence"],
                 "yaw": diagnostics["yaw"],
                 "pitch": diagnostics["pitch"],
                 "roll": diagnostics["roll"],

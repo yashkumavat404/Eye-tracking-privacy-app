@@ -11,8 +11,8 @@ import numpy as np
 CAMERA_WIDTH = 1280
 CAMERA_HEIGHT = 720
 CAMERA_FPS = 30
-PROCESS_WIDTH = 640
-PROCESS_HEIGHT = 360
+PROCESS_WIDTH = 960
+PROCESS_HEIGHT = 540
 
 LEFT_IRIS = [468, 469, 470, 471, 472]
 RIGHT_IRIS = [473, 474, 475, 476, 477]
@@ -252,11 +252,10 @@ class FaceTracker:
         adjusted_pitch = pitch - self._neutral_pitch
         adjusted_head_offset = head_offset - self._neutral_head_offset
 
-        # Iris displacement is the primary signal. Head motion is only a
-        # small assist so eye movement remains responsive instead of being
-        # swallowed by face/head compensation.
-        raw_x = 0.5 + (eye_offset[0] * 1.95) + (adjusted_head_offset[0] * 0.55) + (adjusted_yaw * 0.035)
-        raw_y = 0.5 + (eye_offset[1] * 1.95) + (adjusted_head_offset[1] * 0.45) - (adjusted_pitch * 0.025)
+        # The intended use case keeps the head steady. Make iris displacement
+        # the dominant signal and use head pose only as a tiny drift correction.
+        raw_x = 0.5 + (eye_offset[0] * 3.20) + (adjusted_head_offset[0] * 0.10) + (adjusted_yaw * 0.006)
+        raw_y = 0.5 + (eye_offset[1] * 3.05) + (adjusted_head_offset[1] * 0.10) - (adjusted_pitch * 0.006)
         stabilized_vector = self._stabilize_gaze_vector(raw_x, raw_y)
         self._gaze_motion_history.append(np.asarray(stabilized_vector, dtype=np.float32))
         if len(self._gaze_motion_history) > 30:
@@ -293,7 +292,7 @@ class FaceTracker:
                 1.0
                 - (yaw_error * 0.16)
                 - (pitch_error * 0.16)
-                - (eye_motion * 0.08),
+                - (eye_motion * 0.03),
                 0.0,
                 1.0,
             )

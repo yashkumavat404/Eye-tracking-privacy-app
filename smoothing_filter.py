@@ -16,12 +16,12 @@ class ExponentialSmoothingFilter:
 
     def __init__(
         self,
-        alpha_slow: float = 0.86,
-        alpha_fast: float = 0.96,
-        fast_threshold: float = 24.0,
-        freeze_duration: float = 0.045,
-        deadzone: float = 0.75,
-        prediction_gain: float = 0.10,
+        alpha_slow: float = 0.90,
+        alpha_fast: float = 0.985,
+        fast_threshold: float = 18.0,
+        freeze_duration: float = 0.030,
+        deadzone: float = 0.45,
+        prediction_gain: float = 0.18,
     ) -> None:
         self.alpha_slow = alpha_slow
         self.alpha_fast = alpha_fast
@@ -62,7 +62,8 @@ class ExponentialSmoothingFilter:
             if self._previous_input is not None:
                 velocity = (incoming - self._previous_input) / dt
 
-            predicted = incoming + (velocity * min(self.prediction_gain * dt, 0.012))
+            prediction_horizon = min(self.prediction_gain * dt, 0.020)
+            predicted = incoming + (velocity * prediction_horizon)
             distance = float(np.linalg.norm(predicted - self._point))
 
             if distance < self.deadzone:
@@ -71,7 +72,7 @@ class ExponentialSmoothingFilter:
 
             alpha = self.alpha_fast if distance >= self.fast_threshold else self.alpha_slow
             quality = float(np.clip(confidence, 0.0, 1.0))
-            alpha *= 0.78 + (0.22 * quality)
+            alpha *= 0.90 + (0.10 * quality)
 
             self._point = ((1.0 - alpha) * self._point) + (alpha * predicted)
             self._previous_input = incoming

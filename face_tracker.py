@@ -274,7 +274,7 @@ class FaceTracker:
         scale_y = frame_height / float(process_height)
         points = np.array(
             [
-                (landmark.x * PROCESS_WIDTH * scale_x, landmark.y * PROCESS_HEIGHT * scale_y)
+                (landmark.x * process_width * scale_x, landmark.y * process_height * scale_y)
                 for landmark in results.multi_face_landmarks[0].landmark
             ],
             dtype=np.float32,
@@ -376,8 +376,8 @@ class FaceTracker:
             right_pupil_confidence=0.0 if right_detection is None else float(right_detection.confidence),
             pupil_confidence=pupil_confidence,
             yaw=0.0,
-            pitch=pitch,
-            roll=roll,
+            pitch=0.0,
+            roll=0.0,
             ear=float(ear),
             blink=blink,
             confidence=confidence,

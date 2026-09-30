@@ -46,10 +46,11 @@ class CalibrationMapper:
     @classmethod
     def build_grid(cls, screen_size: Tuple[int, int]) -> List[CalibrationPoint]:
         width, height = screen_size
-        # Keep all 25 targets comfortably inside the drawable display area.
-        # Explicitly generate five rows and five columns: 5 x 5 = 25.
-        margin_x = max(80, int(width * 0.07))
-        margin_y = max(80, int(height * 0.07))
+        # Place calibration targets close to the real display boundaries so the
+        # model learns edge/corner pupil behavior instead of only the center.
+        # Keep a small safety margin so the target remains fully clickable.
+        margin_x = max(32, int(width * 0.025))
+        margin_y = max(32, int(height * 0.025))
         xs = np.linspace(margin_x, width - margin_x, 5, dtype=np.int32)
         ys = np.linspace(margin_y, height - margin_y, 5, dtype=np.int32)
 

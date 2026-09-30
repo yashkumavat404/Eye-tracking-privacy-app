@@ -197,10 +197,14 @@ class CalibrationMapper:
     def _predict(self, gaze_vector: Tuple[float, float], gaze_features: Optional[Tuple[float, ...]]) -> np.ndarray:
         vector = np.asarray([gaze_vector], dtype=np.float64)
         features = None
-        if gaze_features is not None and self._feature_mean is not None and self._feature_scale is not None:
-            raw = np.asarray([gaze_features], dtype=np.float64)
-            if raw.shape[1] == self._feature_mean.shape[0]:
-                features = raw
+        if self._feature_mean is not None and self._feature_scale is not None:
+            if gaze_features is None:
+                # Mean feature vector is the neutral/average eye state.
+                features = self._feature_mean.reshape(1, -1)
+            else:
+                raw = np.asarray([gaze_features], dtype=np.float64)
+                if raw.shape[1] == self._feature_mean.shape[0]:
+                    features = raw
         design = self._design_matrix(vector, features, fit_scaler=False)
         if self._coefficients is None:
             return np.asarray([gaze_vector[0] * self.screen_width, gaze_vector[1] * self.screen_height], dtype=np.float64)

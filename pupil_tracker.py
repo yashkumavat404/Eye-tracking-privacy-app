@@ -129,10 +129,10 @@ class PupilDetector:
             center_score = max(0.0, 1.0 - distance / self.MAX_CENTER_DISTANCE)
             area_score = min(1.0, area / max(iris_area * 0.12, 1.0))
             score = (
-                0.42 * center_score
-                + 0.30 * darkness
-                + 0.18 * aspect
-                + 0.10 * area_score
+                0.16 * center_score
+                + 0.46 * darkness
+                + 0.22 * aspect
+                + 0.16 * area_score
             )
 
             if score > best_score:

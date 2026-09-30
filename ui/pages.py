@@ -105,7 +105,62 @@ class TrackingPage(QtWidgets.QWidget):
         controls.layout.addWidget(self.smoothing)
         controls.layout.addWidget(self.threshold)
         layout.addWidget(controls)
+
+        diagnostics = Card("Live Tracking Diagnostics")
+        grid = QtWidgets.QGridLayout()
+        grid.setHorizontalSpacing(24)
+        grid.setVerticalSpacing(10)
+        self.camera_value = QtWidgets.QLabel("Waiting")
+        self.face_value = QtWidgets.QLabel("Waiting")
+        self.iris_value = QtWidgets.QLabel("Waiting")
+        self.gaze_value = QtWidgets.QLabel("—")
+        self.pupil_value = QtWidgets.QLabel("L: —   R: —")
+        self.pose_value = QtWidgets.QLabel("Y: 0.000   P: 0.000   R: 0.000")
+        self.motion_value = QtWidgets.QLabel("0.000")
+        self.track_fps_value = QtWidgets.QLabel("0.0")
+        self.blink_value = QtWidgets.QLabel("No")
+        self.neutral_value = QtWidgets.QLabel("Warming up")
+        rows = [
+            ("Camera", self.camera_value),
+            ("Face", self.face_value),
+            ("Iris landmarks", self.iris_value),
+            ("Gaze vector", self.gaze_value),
+            ("Iris centers", self.pupil_value),
+            ("Head pose", self.pose_value),
+            ("Gaze motion", self.motion_value),
+            ("Tracker FPS", self.track_fps_value),
+            ("Blink", self.blink_value),
+            ("Neutral baseline", self.neutral_value),
+        ]
+        for index, (label, value) in enumerate(rows):
+            row = index % 3
+            col = (index // 3) * 2
+            grid.addWidget(QtWidgets.QLabel(label), row, col)
+            grid.addWidget(value, row, col + 1)
+        diagnostics.layout.addLayout(grid)
+        layout.addWidget(diagnostics)
         layout.addStretch()
+
+    def update_diagnostics(self, data: dict) -> None:
+        self.camera_value.setText("Open" if data.get("camera_open") else "Not available")
+        self.face_value.setText("Detected" if data.get("face_detected") else "Not detected")
+        self.iris_value.setText("Detected" if data.get("iris_detected") else "Not detected")
+        gaze = data.get("gaze_vector")
+        self.gaze_value.setText("—" if gaze is None else f"X {gaze[0]:.3f}   Y {gaze[1]:.3f}")
+        left = data.get("left_pupil")
+        right = data.get("right_pupil")
+        left_text = "—" if left is None else f"{left[0]:.0f},{left[1]:.0f}"
+        right_text = "—" if right is None else f"{right[0]:.0f},{right[1]:.0f}"
+        self.pupil_value.setText(f"L: {left_text}   R: {right_text}")
+        self.pose_value.setText(
+            f"Y: {data.get('yaw', 0.0):.3f}   "
+            f"P: {data.get('pitch', 0.0):.3f}   "
+            f"R: {data.get('roll', 0.0):.3f}"
+        )
+        self.motion_value.setText(f"{data.get('gaze_motion', 0.0):.4f}")
+        self.track_fps_value.setText(f"{data.get('tracking_fps', 0.0):.1f}")
+        self.blink_value.setText("Yes" if data.get("blink") else "No")
+        self.neutral_value.setText("Ready" if data.get("neutral_ready") else "Warming up")
 
     @staticmethod
     def _switch_row(title: str, subtitle: str, switch: ToggleSwitch) -> QtWidgets.QHBoxLayout:

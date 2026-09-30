@@ -42,8 +42,9 @@ class GazeEstimator:
         label: str,
         screen_point: Tuple[int, int],
         gaze_vector: Tuple[float, float],
+        gaze_features: Optional[Tuple[float, ...]] = None,
     ) -> None:
-        self.mapper.add_sample(label, screen_point, gaze_vector)
+        self.mapper.add_sample(label, screen_point, gaze_vector, gaze_features)
         if self.mapper.is_complete():
             self.mapper.save()
 
@@ -51,7 +52,7 @@ class GazeEstimator:
         if observation is None or not observation.face_detected or observation.gaze_vector is None:
             return None
 
-        raw_point = self.mapper.map_vector_to_screen(observation.gaze_vector)
+        raw_point = self.mapper.map_observation(observation.gaze_vector, observation.gaze_features)
         if observation.blink:
             self.filter.freeze(observation.timestamp)
             raw_point = self.last_point

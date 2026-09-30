@@ -149,6 +149,7 @@ class MainWindow(QtWidgets.QMainWindow):
 
     def _update_status(self, data: dict) -> None:
         self.dashboard.update_status(data)
+        self.tracking.update_diagnostics(data)
         self.display.radius.slider.blockSignals(True)
         self.display.radius.setValue(data.get("radius", 260))
         self.display.radius.slider.blockSignals(False)

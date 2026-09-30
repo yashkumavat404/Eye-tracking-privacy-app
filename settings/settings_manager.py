@@ -14,6 +14,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "tracking_sensitivity": 70,
     "smoothing": 55,
     "confidence_threshold": 55,
+    "calibration_sample_seconds": 0.40,
     "brightness_reduction": 70,
     "spotlight_softness": 55,
     "spotlight_opacity": 90,

@@ -95,7 +95,9 @@ class SpotlightRenderer:
         reduction = np.clip(brightness_reduction / 100.0, 0.0, 1.0)
         background_factor = 1.0 - (0.72 * reduction)
 
-        self._cached_frame = frame
+        # Keep an owned copy because mss returns a view backed by the
+        # current ScreenShot object. The next capture must not invalidate it.
+        self._cached_frame = frame.copy()
         self._cached_background = blurred_native.astype(np.float32) * background_factor
         self._cached_background_key = (int(brightness_reduction), int(softness), int(width))
 

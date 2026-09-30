@@ -396,21 +396,26 @@ class FaceTracker:
         points: np.ndarray,
         eye: dict[str, int],
     ) -> np.ndarray:
-        """Return iris position in eye-local normalized coordinates."""
-        outer = points[eye["outer"]]
-        inner = points[eye["inner"]]
-        top = points[eye["top"]]
-        bottom = points[eye["bottom"]]
+        """Return a consistent left-to-right, top-to-bottom iris offset."""
+        first = points[eye["outer"]]
+        second = points[eye["inner"]]
+        left_corner, right_corner = (
+            (first, second) if first[0] <= second[0] else (second, first)
+        )
+        top_point, bottom_point = (
+            (points[eye["top"]], points[eye["bottom"]])
+            if points[eye["top"]][1] <= points[eye["bottom"]][1]
+            else (points[eye["bottom"]], points[eye["top"]])
+        )
 
-        horizontal = outer - inner
-        vertical = bottom - top
+        horizontal = right_corner - left_corner
+        vertical = bottom_point - top_point
         horizontal_norm = max(float(np.dot(horizontal, horizontal)), 1.0)
         vertical_norm = max(float(np.dot(vertical, vertical)), 1.0)
 
-        h = float(np.dot(pupil - inner, horizontal) / horizontal_norm)
-        v = float(np.dot(pupil - top, vertical) / vertical_norm)
+        h = float(np.dot(pupil - left_corner, horizontal) / horizontal_norm)
+        v = float(np.dot(pupil - top_point, vertical) / vertical_norm)
 
-        # Convert [0, 1] eye-local coordinates into a centered signal.
         return np.asarray([h - 0.5, v - 0.5], dtype=np.float32)
 
     @staticmethod

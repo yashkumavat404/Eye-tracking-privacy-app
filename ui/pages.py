@@ -117,16 +117,18 @@ class TrackingPage(QtWidgets.QWidget):
         self.pupil_value = QtWidgets.QLabel("L: —   R: —")
         self.pose_value = QtWidgets.QLabel("Y: 0.000   P: 0.000   R: 0.000")
         self.motion_value = QtWidgets.QLabel("0.000")
+        self.pupil_confidence_value = QtWidgets.QLabel("0%")
         self.track_fps_value = QtWidgets.QLabel("0.0")
         self.blink_value = QtWidgets.QLabel("No")
         self.neutral_value = QtWidgets.QLabel("Warming up")
         rows = [
             ("Camera", self.camera_value),
             ("Face", self.face_value),
-            ("Iris landmarks", self.iris_value),
+            ("Pupils", self.iris_value),
             ("Gaze vector", self.gaze_value),
             ("Iris centers", self.pupil_value),
             ("Head pose", self.pose_value),
+            ("Pupil confidence", self.pupil_confidence_value),
             ("Gaze motion", self.motion_value),
             ("Tracker FPS", self.track_fps_value),
             ("Blink", self.blink_value),
@@ -157,6 +159,7 @@ class TrackingPage(QtWidgets.QWidget):
             f"P: {data.get('pitch', 0.0):.3f}   "
             f"R: {data.get('roll', 0.0):.3f}"
         )
+        self.pupil_confidence_value.setText(f"{data.get('pupil_confidence', 0.0) * 100:.0f}%")
         self.motion_value.setText(f"{data.get('gaze_motion', 0.0):.4f}")
         self.track_fps_value.setText(f"{data.get('tracking_fps', 0.0):.1f}")
         self.blink_value.setText("Yes" if data.get("blink") else "No")

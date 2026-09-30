@@ -349,12 +349,24 @@ class FaceTracker:
         # Calibration features are pupil-only. Per-eye normalized pupil
         # coordinates remain available so calibration can learn binocular
         # asymmetry without ever learning head position as gaze.
+        left_norm = (
+            left_detection.normalized
+            if left_detection is not None
+            else right_detection.normalized
+            if right_detection is not None
+            else (0.5, 0.5)
+        )
+        right_norm = (
+            right_detection.normalized
+            if right_detection is not None
+            else left_detection.normalized
+            if left_detection is not None
+            else (0.5, 0.5)
+        )
         features = np.array(
             [
-                left_detection.normalized[0] if left_detection else 0.5,
-                left_detection.normalized[1] if left_detection else 0.5,
-                right_detection.normalized[0] if right_detection else 0.5,
-                right_detection.normalized[1] if right_detection else 0.5,
+                left_norm[0], left_norm[1],
+                right_norm[0], right_norm[1],
             ],
             dtype=np.float32,
         )

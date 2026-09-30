@@ -191,20 +191,43 @@ class CalibrationMapper:
         else:
             mapped = self._weighted_map(gaze_vector)
 
+        mapped = self._expand_calibrated_range(mapped)
         mapped[0] = np.clip(mapped[0], 0, self.screen_width - 1)
         mapped[1] = np.clip(mapped[1], 0, self.screen_height - 1)
         return int(mapped[0]), int(mapped[1])
 
     def map_observation(self, gaze_vector: Tuple[float, float], gaze_features: Optional[Tuple[float, ...]]) -> Tuple[int, int]:
+        vector_mapped = np.asarray(self.map_vector_to_screen(gaze_vector), dtype=np.float64)
+
         if self._feature_coefficients is not None and self.is_complete() and gaze_features is not None:
             feature_array = np.asarray(gaze_features, dtype=np.float64)
             if feature_array.size == self._feature_coefficients.shape[0] - 1:
                 design = np.concatenate(([1.0], feature_array))
-                mapped = design @ self._feature_coefficients
+                feature_mapped = design @ self._feature_coefficients
+                mapped = (0.78 * vector_mapped) + (0.22 * feature_mapped)
+                mapped = self._expand_calibrated_range(mapped)
                 mapped[0] = np.clip(mapped[0], 0, self.screen_width - 1)
                 mapped[1] = np.clip(mapped[1], 0, self.screen_height - 1)
                 return int(mapped[0]), int(mapped[1])
-        return self.map_vector_to_screen(gaze_vector)
+
+        return int(vector_mapped[0]), int(vector_mapped[1])
+
+    def _expand_calibrated_range(self, mapped: np.ndarray) -> np.ndarray:
+        if not self.samples:
+            return mapped
+
+        points = np.asarray(
+            [sample.screen_point for sample in self.samples.values()],
+            dtype=np.float64,
+        )
+        minimum = points.min(axis=0)
+        maximum = points.max(axis=0)
+        span = np.maximum(maximum - minimum, 1.0)
+        normalized = (mapped - minimum) / span
+        return normalized * np.asarray(
+            [self.screen_width - 1, self.screen_height - 1],
+            dtype=np.float64,
+        )
 
     def _map_quadratic(self, target: np.ndarray) -> np.ndarray:
         x, y = target

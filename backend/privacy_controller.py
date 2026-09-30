@@ -499,6 +499,7 @@ class PrivacyController(QtCore.QObject):
         self._calibration_samples: list[tuple[Tuple[float, float], Tuple[float, ...]]] = []
         self._calibration_deadline = 0.0
         self._calibration_sample_started = 0.0
+        self._calibration_click_count = 0
         self._calibration_last_timestamp = -1.0
 
         self.frame_timer = QtCore.QTimer(self)
@@ -657,17 +658,21 @@ class PrivacyController(QtCore.QObject):
             return
 
         self._calibration_collecting = False
-        if len(self._calibration_samples) < 8:
-            self.notification_requested.emit(
-                "Hold gaze and click again",
-                "Not enough stable eye samples were received for this target.",
-            )
-            self.calibration_changed.emit({
-                "state": "Ready — click target again",
-                "progress": int((self.calibration.index / len(self.calibration.targets)) * 100),
-                "accuracy": self._accuracy_percent(),
-            })
-            return
+        if len(self._calibration_samples) < 3:
+            observation = self.face_tracker.get_latest_observation()
+            if observation and observation.gaze_vector and observation.gaze_features:
+                self._calibration_samples = [(observation.gaze_vector, observation.gaze_features)]
+            else:
+                self.notification_requested.emit(
+                    "Waiting for eye detection",
+                    "Keep your face centered and click the same target again.",
+                )
+                self.calibration_changed.emit({
+                    "state": "Ready — click target again",
+                    "progress": int((self.calibration.index / len(self.calibration.targets)) * 100),
+                    "accuracy": self._accuracy_percent(),
+                })
+                return
 
         vectors = np.asarray([item[0] for item in self._calibration_samples], dtype=np.float32)
         features = np.asarray([item[1] for item in self._calibration_samples], dtype=np.float32)
@@ -708,12 +713,10 @@ class PrivacyController(QtCore.QObject):
         self._calibration_samples.clear()
         self._calibration_last_timestamp = -1.0
         self._calibration_sample_started = time.perf_counter()
-        self._calibration_deadline = self._calibration_sample_started + max(
-            0.45,
-            float(self.settings.get("calibration_sample_seconds", 0.55)),
-        )
+        self._calibration_deadline = self._calibration_sample_started + 0.28
+        self._calibration_click_count += 1
         self.calibration_changed.emit({
-            "state": "Sampling...",
+            "state": f"Sampling point {self.calibration.index + 1}/25...",
             "progress": int((self.calibration.index / len(self.calibration.targets)) * 100),
             "accuracy": self._accuracy_percent(),
         })

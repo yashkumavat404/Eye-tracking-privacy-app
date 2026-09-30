@@ -202,7 +202,7 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self._target_button.setStyleSheet(
             "QPushButton { background: transparent; border: none; padding: 0; }"
         )
-        self._target_button.clicked.connect(self.calibration_click_requested.emit)
+        self._target_button.clicked.connect(lambda _checked=False: self.calibration_click_requested.emit())
         self._target_button.hide()
         self._target: Optional[Tuple[int, int]] = None
         self._guide_points: list[Tuple[int, int]] = []

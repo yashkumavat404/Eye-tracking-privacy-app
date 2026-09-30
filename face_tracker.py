@@ -225,7 +225,7 @@ class FaceTracker:
                 frame = cv2.flip(frame, 1)
                 try:
                     observation = self._process_frame(frame)
-                except cv2.error:
+                except (cv2.error, RuntimeError, ValueError, TypeError):
                     continue
                 with self.lock:
                     self.latest_observation = observation

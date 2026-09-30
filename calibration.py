@@ -28,7 +28,7 @@ class CalibrationSample:
 
 class CalibrationMapper:
     GRID_SIZE = 5
-    MODEL_VERSION = 3
+    MODEL_VERSION = 4
     # The pupil-only model has six terms and 25 calibration samples. A small
     # ridge term keeps the fit stable without pulling legitimate edge/center
     # gaze positions toward one side of the display.
@@ -163,22 +163,34 @@ class CalibrationMapper:
         features: Optional[np.ndarray],
         fit_scaler: bool = False,
     ) -> np.ndarray:
-        x = vectors[:, 0]
-        y = vectors[:, 1]
+        # Calibration is learned from the actual normalized pupil positions
+        # inside both eyes. The four coordinates preserve horizontal and
+        # vertical eye movement independently, which is important at the
+        # display edges where a small pupil error can otherwise be compressed.
+        if features is None:
+            features = np.column_stack(
+                [
+                    0.5 + vectors[:, 0],
+                    0.5 + vectors[:, 1],
+                    0.5 + vectors[:, 0],
+                    0.5 + vectors[:, 1],
+                ]
+            )
+
+        values = np.asarray(features, dtype=np.float64)
+        if values.ndim != 2 or values.shape[1] != self.GAZE_FEATURE_COUNT:
+            raise ValueError(f"Calibration requires {self.GAZE_FEATURE_COUNT} pupil features")
+
+        x0, y0, x1, y1 = [values[:, index] for index in range(4)]
         parts = [
-            np.ones(len(vectors), dtype=np.float64),
-            x,
-            y,
-            x * x,
-            x * y,
-            y * y,
+            np.ones(len(values), dtype=np.float64),
+            x0, y0, x1, y1,
+            x0 * x0, y0 * y0, x1 * x1, y1 * y1,
+            x0 * y0, x0 * x1, x0 * y1,
+            y0 * x1, y0 * y1, x1 * y1,
         ]
 
-        # Screen mapping deliberately uses only the fused pupil-in-eye vector.
-        # Face position and head pose are useful quality checks, but feeding them
-        # to this model makes a head movement look like a gaze movement.
-        del features, fit_scaler
-
+        del fit_scaler
         return np.column_stack(parts)
 
     def _fit_regression(self) -> None:
@@ -190,10 +202,15 @@ class CalibrationMapper:
         ordered = list(self.samples.values())
         vectors = np.asarray([sample.gaze_vector for sample in ordered], dtype=np.float64)
         points = np.asarray([sample.screen_point for sample in ordered], dtype=np.float64)
+        if any(sample.gaze_features is None for sample in ordered):
+            self._coefficients = None
+            self._rmse = None
+            return
+        features = np.asarray([sample.gaze_features for sample in ordered], dtype=np.float64)
 
         self._feature_mean = None
         self._feature_scale = None
-        design = self._design_matrix(vectors, None)
+        design = self._design_matrix(vectors, features)
 
         try:
             regularization = self.RIDGE_LAMBDA * np.eye(design.shape[1], dtype=np.float64)
@@ -221,8 +238,13 @@ class CalibrationMapper:
 
     def _predict(self, gaze_vector: Tuple[float, float], gaze_features: Optional[Tuple[float, ...]]) -> np.ndarray:
         vector = np.asarray([gaze_vector], dtype=np.float64)
-        del gaze_features
-        design = self._design_matrix(vector, None)
+        if gaze_features is None:
+            return np.asarray(
+                [gaze_vector[0] * self.screen_width, gaze_vector[1] * self.screen_height],
+                dtype=np.float64,
+            )
+        features = np.asarray([gaze_features], dtype=np.float64)
+        design = self._design_matrix(vector, features)
         if self._coefficients is None:
             return np.asarray([gaze_vector[0] * self.screen_width, gaze_vector[1] * self.screen_height], dtype=np.float64)
         return design[0] @ self._coefficients
@@ -247,7 +269,7 @@ class CalibrationMapper:
         gaze_vector: Tuple[float, float],
         gaze_features: Optional[Tuple[float, ...]],
     ) -> Tuple[int, int]:
-        if self._coefficients is not None and self.is_complete():
+        if self._coefficients is not None and self.is_complete() and gaze_features is not None:
             mapped = self._predict(gaze_vector, gaze_features)
         else:
             mapped = np.asarray(self.map_vector_to_screen(gaze_vector), dtype=np.float64)

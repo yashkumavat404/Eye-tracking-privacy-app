@@ -8,6 +8,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 
+from pupil_tracker import PupilDetector
+
 CAMERA_WIDTH = 1280
 CAMERA_HEIGHT = 720
 CAMERA_FPS = 30
@@ -47,6 +49,9 @@ class FaceObservation:
     gaze_vector: Optional[Tuple[float, float]]
     left_pupil: Optional[Tuple[float, float]]
     right_pupil: Optional[Tuple[float, float]]
+    left_pupil_confidence: float
+    right_pupil_confidence: float
+    pupil_confidence: float
     yaw: float
     pitch: float
     roll: float
@@ -66,6 +71,7 @@ class FaceTracker:
         self.lock = threading.Lock()
         self._face_mesh = None
         self._gaze_vector_history: list[np.ndarray] = []
+        self._pupil_detector = PupilDetector()
         self._history_limit = 2
         self._neutral_pitch = 0.0
         self._neutral_yaw = 0.0
@@ -227,55 +233,91 @@ class FaceTracker:
             dtype=np.float32,
         )
 
-        yaw, pitch, roll = self._estimate_head_pose(points, frame_width, frame_height)
-        left_pupil = tuple(points[LEFT_IRIS].mean(axis=0))
-        right_pupil = tuple(points[RIGHT_IRIS].mean(axis=0))
-        left_eye_offset = self._normalized_iris_offset(
-            np.asarray(left_pupil, dtype=np.float32),
-            points,
+        process_points = points / np.array([scale_x, scale_y], dtype=np.float32)
+        left_detection, right_detection = self._pupil_detector.detect_both(
+            process_frame,
+            process_points,
             LEFT_EYE,
-        )
-        right_eye_offset = self._normalized_iris_offset(
-            np.asarray(right_pupil, dtype=np.float32),
-            points,
             RIGHT_EYE,
+            LEFT_IRIS,
+            RIGHT_IRIS,
         )
-        # Average both eyes, but preserve the full normalized iris travel.
-        eye_offset = (left_eye_offset + right_eye_offset) * 0.5
 
+        left_pupil = None if left_detection is None else (
+            float(left_detection.center[0] * scale_x),
+            float(left_detection.center[1] * scale_y),
+        )
+        right_pupil = None if right_detection is None else (
+            float(right_detection.center[0] * scale_x),
+            float(right_detection.center[1] * scale_y),
+        )
+        left_eye_offset = None if left_detection is None else np.asarray(
+            [left_detection.normalized[0] - 0.5, left_detection.normalized[1] - 0.5],
+            dtype=np.float32,
+        )
+        right_eye_offset = None if right_detection is None else np.asarray(
+            [right_detection.normalized[0] - 0.5, right_detection.normalized[1] - 0.5],
+            dtype=np.float32,
+        )
+
+        pupil_confidences = [
+            detection.confidence
+            for detection in (left_detection, right_detection)
+            if detection is not None
+        ]
+        pupil_confidence = float(max(pupil_confidences)) if pupil_confidences else 0.0
+
+        valid_offsets = []
+        valid_weights = []
+        if left_eye_offset is not None and left_detection is not None:
+            valid_offsets.append(left_eye_offset)
+            valid_weights.append(left_detection.confidence)
+        if right_eye_offset is not None and right_detection is not None:
+            valid_offsets.append(right_eye_offset)
+            valid_weights.append(right_detection.confidence)
+
+        if not valid_offsets:
+            return self._empty_observation(timestamp, frame_width, frame_height)
+
+        if len(valid_offsets) == 1:
+            eye_offset = valid_offsets[0]
+        else:
+            weights = np.asarray(valid_weights, dtype=np.float32)
+            weights /= max(float(weights.sum()), 1e-6)
+            eye_offset = (
+                valid_offsets[0] * weights[0]
+                + valid_offsets[1] * weights[1]
+            )
+
+        # Head pose is diagnostic/auxiliary only. It is deliberately excluded
+        # from the gaze vector and calibration features.
+        yaw, pitch, roll = self._estimate_head_pose(points, frame_width, frame_height)
         face_center = points[NOSE_TIP]
         frame_center = np.array([frame_width / 2.0, frame_height / 2.0], dtype=np.float32)
         head_offset = (face_center - frame_center) / np.array([frame_width, frame_height], dtype=np.float32)
         self._update_neutral_pose(yaw, pitch, head_offset)
 
-        adjusted_yaw = yaw - self._neutral_yaw
-        adjusted_pitch = pitch - self._neutral_pitch
-        adjusted_head_offset = head_offset - self._neutral_head_offset
-
-        # The intended use case keeps the head steady. Make iris displacement
-        # the dominant signal and use head pose only as a tiny drift correction.
-        raw_x = 0.5 + (eye_offset[0] * 3.20) + (adjusted_head_offset[0] * 0.10) + (adjusted_yaw * 0.006)
-        raw_y = 0.5 + (eye_offset[1] * 3.05) + (adjusted_head_offset[1] * 0.10) - (adjusted_pitch * 0.006)
+        # The screen-coordinate input is derived from normalized pupil position
+        # inside the eye, never from face/head position or raw camera pixels.
+        raw_x = 0.5 + (eye_offset[0] * 2.25)
+        raw_y = 0.5 + (eye_offset[1] * 2.10)
         stabilized_vector = self._stabilize_gaze_vector(raw_x, raw_y)
         self._gaze_motion_history.append(np.asarray(stabilized_vector, dtype=np.float32))
         if len(self._gaze_motion_history) > 30:
             self._gaze_motion_history.pop(0)
 
-        # Keep both eyes and head-pose signals for calibration. The learned mapper
-        # can compensate for per-eye asymmetry instead of relying only on raw_x/raw_y.
+        # Calibration features are pupil-only. Per-eye normalized pupil
+        # coordinates remain available so calibration can learn binocular
+        # asymmetry without ever learning head position as gaze.
         features = np.array(
             [
-                left_eye_offset[0], left_eye_offset[1],
-                right_eye_offset[0], right_eye_offset[1],
-                adjusted_head_offset[0], adjusted_head_offset[1],
-                adjusted_yaw, adjusted_pitch, adjusted_yaw * adjusted_head_offset[0],
-                adjusted_pitch * adjusted_head_offset[1],
+                left_detection.normalized[0] if left_detection else 0.5,
+                left_detection.normalized[1] if left_detection else 0.5,
+                right_detection.normalized[0] if right_detection else 0.5,
+                right_detection.normalized[1] if right_detection else 0.5,
             ],
             dtype=np.float32,
         )
-        # Use the newest feature vector for live gaze. The calibration sampler
-        # already performs robust temporal aggregation, so another 3-frame
-        # median here only adds visible latency.
         stable_features = features
 
         ear = (
@@ -284,19 +326,11 @@ class FaceTracker:
         ) / 2.0
         blink = ear < 0.185
 
-        yaw_error = abs(adjusted_yaw)
-        pitch_error = abs(adjusted_pitch)
-        eye_motion = float(np.linalg.norm(eye_offset))
-        confidence = float(
-            np.clip(
-                1.0
-                - (yaw_error * 0.16)
-                - (pitch_error * 0.16)
-                - (eye_motion * 0.03),
-                0.0,
-                1.0,
-            )
-        )
+        confidence = float(np.clip(
+            pupil_confidence * (0.85 if blink else 1.0),
+            0.0,
+            1.0,
+        ))
 
         return FaceObservation(
             timestamp=timestamp,
@@ -304,8 +338,11 @@ class FaceTracker:
             face_detected=True,
             gaze_vector=stabilized_vector,
             gaze_features=tuple(float(value) for value in stable_features),
-            left_pupil=(float(left_pupil[0]), float(left_pupil[1])),
-            right_pupil=(float(right_pupil[0]), float(right_pupil[1])),
+            left_pupil=left_pupil,
+            right_pupil=right_pupil,
+            left_pupil_confidence=0.0 if left_detection is None else float(left_detection.confidence),
+            right_pupil_confidence=0.0 if right_detection is None else float(right_detection.confidence),
+            pupil_confidence=pupil_confidence,
             yaw=yaw,
             pitch=pitch,
             roll=roll,
@@ -324,6 +361,9 @@ class FaceTracker:
                 "iris_detected": False,
                 "left_pupil": None,
                 "right_pupil": None,
+                "left_pupil_confidence": 0.0,
+                "right_pupil_confidence": 0.0,
+                "pupil_confidence": 0.0,
                 "gaze_vector": None,
                 "yaw": 0.0,
                 "pitch": 0.0,
@@ -346,6 +386,9 @@ class FaceTracker:
             "iris_detected": observation.left_pupil is not None and observation.right_pupil is not None,
             "left_pupil": observation.left_pupil,
             "right_pupil": observation.right_pupil,
+            "left_pupil_confidence": observation.left_pupil_confidence,
+            "right_pupil_confidence": observation.right_pupil_confidence,
+            "pupil_confidence": observation.pupil_confidence,
             "gaze_vector": observation.gaze_vector,
             "yaw": observation.yaw,
             "pitch": observation.pitch,
@@ -476,6 +519,9 @@ class FaceTracker:
             gaze_vector=None,
             left_pupil=None,
             right_pupil=None,
+            left_pupil_confidence=0.0,
+            right_pupil_confidence=0.0,
+            pupil_confidence=0.0,
             yaw=0.0,
             pitch=0.0,
             roll=0.0,

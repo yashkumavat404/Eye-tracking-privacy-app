@@ -28,9 +28,12 @@ class CalibrationSample:
 
 class CalibrationMapper:
     GRID_SIZE = 5
-    MODEL_VERSION = 2
-    RIDGE_LAMBDA = 0.08
-    GAZE_FEATURE_COUNT = 10
+    MODEL_VERSION = 3
+    # The pupil-only model has six terms and 25 calibration samples. A small
+    # ridge term keeps the fit stable without pulling legitimate edge/center
+    # gaze positions toward one side of the display.
+    RIDGE_LAMBDA = 0.003
+    GAZE_FEATURE_COUNT = 4
 
     def __init__(self, screen_size: Tuple[int, int]) -> None:
         self.screen_width, self.screen_height = screen_size
@@ -171,13 +174,10 @@ class CalibrationMapper:
             y * y,
         ]
 
-        if features is not None and features.size:
-            if fit_scaler or self._feature_mean is None or self._feature_scale is None:
-                self._feature_mean = np.mean(features, axis=0)
-                scale = np.std(features, axis=0)
-                self._feature_scale = np.where(scale < 1e-5, 1.0, scale)
-            normalized = (features - self._feature_mean) / self._feature_scale
-            parts.extend([normalized[:, index] for index in range(normalized.shape[1])])
+        # Screen mapping deliberately uses only the fused pupil-in-eye vector.
+        # Face position and head pose are useful quality checks, but feeding them
+        # to this model makes a head movement look like a gaze movement.
+        del features, fit_scaler
 
         return np.column_stack(parts)
 
@@ -191,16 +191,9 @@ class CalibrationMapper:
         vectors = np.asarray([sample.gaze_vector for sample in ordered], dtype=np.float64)
         points = np.asarray([sample.screen_point for sample in ordered], dtype=np.float64)
 
-        feature_rows = [sample.gaze_features for sample in ordered]
-        features: Optional[np.ndarray]
-        if feature_rows and all(row is not None for row in feature_rows):
-            features = np.asarray(feature_rows, dtype=np.float64)
-        else:
-            features = None
-
         self._feature_mean = None
         self._feature_scale = None
-        design = self._design_matrix(vectors, features, fit_scaler=True)
+        design = self._design_matrix(vectors, None)
 
         try:
             regularization = self.RIDGE_LAMBDA * np.eye(design.shape[1], dtype=np.float64)
@@ -228,18 +221,8 @@ class CalibrationMapper:
 
     def _predict(self, gaze_vector: Tuple[float, float], gaze_features: Optional[Tuple[float, ...]]) -> np.ndarray:
         vector = np.asarray([gaze_vector], dtype=np.float64)
-        features = None
-        if self._feature_mean is not None and self._feature_scale is not None:
-            if gaze_features is None:
-                # Mean feature vector is the neutral/average eye state.
-                features = self._feature_mean.reshape(1, -1)
-            else:
-                raw = np.asarray([gaze_features], dtype=np.float64)
-                if raw.shape[1] == self._feature_mean.shape[0]:
-                    features = raw
-                else:
-                    features = self._feature_mean.reshape(1, -1)
-        design = self._design_matrix(vector, features, fit_scaler=False)
+        del gaze_features
+        design = self._design_matrix(vector, None)
         if self._coefficients is None:
             return np.asarray([gaze_vector[0] * self.screen_width, gaze_vector[1] * self.screen_height], dtype=np.float64)
         return design[0] @ self._coefficients

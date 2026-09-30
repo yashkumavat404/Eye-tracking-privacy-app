@@ -19,7 +19,7 @@ class CalibrationMapperTests(unittest.TestCase):
         mapper = CalibrationMapper((1000, 800))
         for label, point, _ in mapper.build_grid((1000, 800)):
             vector = (point[0] / 1000.0, point[1] / 800.0)
-            mapper.add_sample(label, point, vector, (vector[0], vector[1]) * 5)
+            mapper.add_sample(label, point, vector, (vector[0], vector[1]) * 2)
 
         self.assertTrue(mapper.is_complete())
         with tempfile.TemporaryDirectory() as directory:
@@ -27,14 +27,29 @@ class CalibrationMapperTests(unittest.TestCase):
             mapper.save(path)
             restored = CalibrationMapper((1000, 800))
             self.assertTrue(restored.load(path))
-            features = (0.5, 0.5) * 5
+            features = (0.5, 0.5) * 2
             self.assertLessEqual(abs(restored.map_observation((0.5, 0.5), features)[0] - 500), 5)
             self.assertLessEqual(abs(restored.map_observation((0.5, 0.5), features)[1] - 400), 5)
 
     def test_invalid_or_partial_saved_model_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "calibration.json"
-            path.write_text(json.dumps({"model_version": 2, "screen_width": 1000, "screen_height": 800, "samples": []}))
+            path.write_text(json.dumps({"model_version": 3, "screen_width": 1000, "screen_height": 800, "samples": []}))
+            self.assertFalse(CalibrationMapper((1000, 800)).load(path))
+
+    def test_previous_head_assisted_model_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "calibration.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "model_version": 2,
+                        "screen_width": 1000,
+                        "screen_height": 800,
+                        "samples": [],
+                    }
+                )
+            )
             self.assertFalse(CalibrationMapper((1000, 800)).load(path))
 
     def test_invalid_feature_length_is_rejected_before_mapping(self):

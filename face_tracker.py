@@ -15,6 +15,10 @@ PROCESS_WIDTH = 960
 PROCESS_HEIGHT = 540
 CAMERA_REOPEN_FAILURES = 3
 CAMERA_REOPEN_DELAY = 0.25
+PUPIL_HORIZONTAL_GAIN = 3.0
+PUPIL_VERTICAL_GAIN = 3.0
+MIN_EYE_WIDTH_PIXELS = 14.0
+MAX_BINOCULAR_DISAGREEMENT = 0.22
 
 LEFT_IRIS = [468, 469, 470, 471, 472]
 RIGHT_IRIS = [473, 474, 475, 476, 477]
@@ -261,6 +265,9 @@ class FaceTracker:
         )
 
         yaw, pitch, roll = self._estimate_head_pose(points, frame_width, frame_height)
+        # Retained only for diagnostics and quality gating; it does not change
+        # the pupil-derived gaze vector or calibrated screen coordinate.
+        self._update_neutral_pose(yaw, pitch, np.zeros(2, dtype=np.float32))
         left_pupil = tuple(points[LEFT_IRIS].mean(axis=0))
         right_pupil = tuple(points[RIGHT_IRIS].mean(axis=0))
         left_eye_offset = self._normalized_iris_offset(
@@ -276,33 +283,22 @@ class FaceTracker:
         # Average both eyes, but preserve the full normalized iris travel.
         eye_offset = (left_eye_offset + right_eye_offset) * 0.5
 
-        face_center = points[NOSE_TIP]
-        frame_center = np.array([frame_width / 2.0, frame_height / 2.0], dtype=np.float32)
-        head_offset = (face_center - frame_center) / np.array([frame_width, frame_height], dtype=np.float32)
-        self._update_neutral_pose(yaw, pitch, head_offset)
-
-        adjusted_yaw = yaw - self._neutral_yaw
-        adjusted_pitch = pitch - self._neutral_pitch
-        adjusted_head_offset = head_offset - self._neutral_head_offset
-
-        # The intended use case keeps the head steady. Make iris displacement
-        # the dominant signal and use head pose only as a tiny drift correction.
-        raw_x = 0.5 + (eye_offset[0] * 3.20) + (adjusted_head_offset[0] * 0.10) + (adjusted_yaw * 0.006)
-        raw_y = 0.5 + (eye_offset[1] * 3.05) + (adjusted_head_offset[1] * 0.10) - (adjusted_pitch * 0.006)
+        # The gaze signal is pupil position within each eye, never camera-frame
+        # position, nose position, or head translation. Calibration learns the
+        # camera-at-top-bezel relationship from this pupil-only measurement.
+        raw_x = 0.5 + (eye_offset[0] * PUPIL_HORIZONTAL_GAIN)
+        raw_y = 0.5 + (eye_offset[1] * PUPIL_VERTICAL_GAIN)
         stabilized_vector = self._stabilize_gaze_vector(raw_x, raw_y)
         self._gaze_motion_history.append(np.asarray(stabilized_vector, dtype=np.float32))
         if len(self._gaze_motion_history) > 30:
             self._gaze_motion_history.pop(0)
 
-        # Keep both eyes and head-pose signals for calibration. The learned mapper
-        # can compensate for per-eye asymmetry instead of relying only on raw_x/raw_y.
+        # Keep raw binocular pupil offsets for diagnostics/calibration review.
+        # Head pose is intentionally excluded from the gaze mapping features.
         features = np.array(
             [
                 left_eye_offset[0], left_eye_offset[1],
                 right_eye_offset[0], right_eye_offset[1],
-                adjusted_head_offset[0], adjusted_head_offset[1],
-                adjusted_yaw, adjusted_pitch, adjusted_yaw * adjusted_head_offset[0],
-                adjusted_pitch * adjusted_head_offset[1],
             ],
             dtype=np.float32,
         )
@@ -316,27 +312,37 @@ class FaceTracker:
             + self._eye_aspect_ratio(points, RIGHT_EYE_CONTOUR)
         ) / 2.0
         blink = ear < 0.185
-
-        yaw_error = abs(adjusted_yaw)
-        pitch_error = abs(adjusted_pitch)
-        eye_motion = float(np.linalg.norm(eye_offset))
+        left_eye_width = float(np.linalg.norm(points[LEFT_EYE["outer"]] - points[LEFT_EYE["inner"]]))
+        right_eye_width = float(np.linalg.norm(points[RIGHT_EYE["outer"]] - points[RIGHT_EYE["inner"]]))
+        eye_size = min(left_eye_width, right_eye_width)
+        disagreement = float(np.linalg.norm(left_eye_offset - right_eye_offset))
+        size_quality = float(np.clip(eye_size / (MIN_EYE_WIDTH_PIXELS * 2.0), 0.0, 1.0))
+        agreement_quality = float(np.clip(1.0 - disagreement / MAX_BINOCULAR_DISAGREEMENT, 0.0, 1.0))
+        pose_quality = float(np.clip(1.0 - max(abs(yaw), abs(pitch)) / 1.1, 0.0, 1.0))
         confidence = float(
             np.clip(
-                1.0
-                - (yaw_error * 0.16)
-                - (pitch_error * 0.16)
-                - (eye_motion * 0.03),
+                (0.45 * size_quality) + (0.45 * agreement_quality) + (0.10 * pose_quality),
                 0.0,
                 1.0,
             )
+        )
+        pupil_reliable = (
+            not blink
+            and eye_size >= MIN_EYE_WIDTH_PIXELS
+            and disagreement <= MAX_BINOCULAR_DISAGREEMENT
+            and confidence >= 0.50
         )
 
         return FaceObservation(
             timestamp=timestamp,
             frame_size=(frame_width, frame_height),
             face_detected=True,
-            gaze_vector=stabilized_vector,
-            gaze_features=tuple(float(value) for value in stable_features),
+            gaze_vector=stabilized_vector if pupil_reliable else None,
+            gaze_features=(
+                tuple(float(value) for value in stable_features)
+                if pupil_reliable
+                else None
+            ),
             left_pupil=(float(left_pupil[0]), float(left_pupil[1])),
             right_pupil=(float(right_pupil[0]), float(right_pupil[1])),
             yaw=yaw,

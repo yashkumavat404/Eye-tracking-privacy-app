@@ -41,16 +41,24 @@ class CalibrationMapper:
     @classmethod
     def build_grid(cls, screen_size: Tuple[int, int]) -> List[CalibrationPoint]:
         width, height = screen_size
-        margin_x = max(90, width // 14)
-        margin_y = max(90, height // 12)
-        xs = np.linspace(margin_x, width - margin_x, cls.GRID_SIZE).astype(int)
-        ys = np.linspace(margin_y, height - margin_y, cls.GRID_SIZE).astype(int)
+        # Keep all 25 targets comfortably inside the drawable display area.
+        # Explicitly generate five rows and five columns: 5 x 5 = 25.
+        margin_x = max(80, int(width * 0.07))
+        margin_y = max(80, int(height * 0.07))
+        xs = np.linspace(margin_x, width - margin_x, 5, dtype=np.int32)
+        ys = np.linspace(margin_y, height - margin_y, 5, dtype=np.int32)
+
         targets: List[CalibrationPoint] = []
-        for row, y in enumerate(ys):
-            for col, x in enumerate(xs):
+        for row in range(5):
+            for col in range(5):
+                x = int(xs[col])
+                y = int(ys[row])
                 label = _grid_label(row, col)
-                message = f"Look at the dot at row {row + 1}, column {col + 1}, then click."
-                targets.append((label, (int(x), int(y),), message))
+                message = f"Look at the dot at row {row + 1} of 5, column {col + 1} of 5, then click."
+                targets.append((label, (x, y), message))
+
+        assert len(targets) == 25
+        assert len({point[0] for point in targets}) == 25
         return targets
 
     @classmethod

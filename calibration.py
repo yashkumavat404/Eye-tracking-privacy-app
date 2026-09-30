@@ -191,7 +191,6 @@ class CalibrationMapper:
         else:
             mapped = self._weighted_map(gaze_vector)
 
-        mapped = self._expand_calibrated_range(mapped)
         mapped[0] = np.clip(mapped[0], 0, self.screen_width - 1)
         mapped[1] = np.clip(mapped[1], 0, self.screen_height - 1)
         return int(mapped[0]), int(mapped[1])
@@ -204,8 +203,7 @@ class CalibrationMapper:
             if feature_array.size == self._feature_coefficients.shape[0] - 1:
                 design = np.concatenate(([1.0], feature_array))
                 feature_mapped = design @ self._feature_coefficients
-                feature_mapped = self._expand_calibrated_range(feature_mapped)
-                mapped = (0.78 * vector_mapped) + (0.22 * feature_mapped)
+                mapped = (0.82 * vector_mapped) + (0.18 * feature_mapped)
                 mapped[0] = np.clip(mapped[0], 0, self.screen_width - 1)
                 mapped[1] = np.clip(mapped[1], 0, self.screen_height - 1)
                 return int(mapped[0]), int(mapped[1])

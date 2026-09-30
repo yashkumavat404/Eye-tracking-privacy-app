@@ -55,28 +55,28 @@ class SpotlightRenderer:
 
         self._mask_small: Optional[np.ndarray] = None
         self._mask_key: Optional[tuple[int, int, int, int, int, int]] = None
+        self._last_shot = None
+        self._cached_frame: Optional[np.ndarray] = None
+        self._cached_background: Optional[np.ndarray] = None
+        self._cached_background_key: Optional[tuple[int, int, int]] = None
 
     def capture_screen(self) -> np.ndarray:
-        shot = self.sct.grab(self.monitor)
-        # mss returns BGRA; avoid an extra cvtColor/copy.
-        return np.asarray(shot, dtype=np.uint8)[:, :, :3]
+        self._last_shot = self.sct.grab(self.monitor)
+        # Keep the screenshot object alive because the numpy array is a view.
+        return np.asarray(self._last_shot, dtype=np.uint8)[:, :, :3]
 
-    def render_spotlight(
+    def prepare_background(
         self,
         frame: np.ndarray,
-        gaze_point: Tuple[int, int],
-        radius: int,
         brightness_reduction: int,
         softness: int,
-        opacity: int,
-    ) -> np.ndarray:
-        """Keep the spotlight region at native resolution and blur only its surroundings."""
+    ) -> None:
+        """Capture/blur the desktop once; spotlight movement can then update independently."""
         height, width = frame.shape[:2]
         scale = self.render_scale
         small_w = max(1, int(width * scale))
         small_h = max(1, int(height * scale))
 
-        # The expensive blur is performed on a reduced image.
         small = cv2.resize(frame, (small_w, small_h), interpolation=cv2.INTER_AREA)
         blur_size = 9 + int(np.clip(softness, 0, 100) * 0.18)
         blur_size |= 1
@@ -92,6 +92,31 @@ class SpotlightRenderer:
             interpolation=cv2.INTER_LINEAR,
         )
 
+        reduction = np.clip(brightness_reduction / 100.0, 0.0, 1.0)
+        background_factor = 1.0 - (0.72 * reduction)
+
+        self._cached_frame = frame
+        self._cached_background = blurred_native.astype(np.float32) * background_factor
+        self._cached_background_key = (int(brightness_reduction), int(softness), int(width))
+
+    def compose_spotlight(
+        self,
+        gaze_point: Tuple[int, int],
+        radius: int,
+        softness: int,
+        opacity: int,
+    ) -> Optional[np.ndarray]:
+        """Compose the spotlight from the latest cached desktop frame."""
+        frame = self._cached_frame
+        background = self._cached_background
+        if frame is None or background is None:
+            return None
+
+        height, width = frame.shape[:2]
+        scale = self.render_scale
+        small_w = max(1, int(width * scale))
+        small_h = max(1, int(height * scale))
+
         point = (
             int(np.clip(gaze_point[0] * scale, 0, small_w - 1)),
             int(np.clip(gaze_point[1] * scale, 0, small_h - 1)),
@@ -99,7 +124,7 @@ class SpotlightRenderer:
         scaled_radius = max(8, int(radius * scale))
         key = (small_w, small_h, point[0], point[1], scaled_radius, int(softness))
 
-        if key != self._mask_key:
+        if key != self._mask_key or self._mask_small is None:
             mask = np.zeros((small_h, small_w), dtype=np.uint8)
             cv2.circle(mask, point, scaled_radius, 255, -1, lineType=cv2.LINE_AA)
             feather = max(7, int(scaled_radius * (0.10 + np.clip(softness, 0, 100) / 300)))
@@ -109,7 +134,6 @@ class SpotlightRenderer:
             )
             self._mask_key = key
 
-        # Upscale only the mask. The foreground remains the original screen pixels.
         alpha = cv2.resize(
             self._mask_small,
             (width, height),
@@ -117,16 +141,24 @@ class SpotlightRenderer:
         )[..., None]
         alpha *= np.clip(opacity / 100.0, 0.1, 1.0)
 
-        reduction = np.clip(brightness_reduction / 100.0, 0.0, 1.0)
-        background = blurred_native.astype(np.float32) * (1.0 - 0.72 * reduction)
-
-        # Native-resolution foreground preserves readable text, icons and UI details.
         composed = (
             frame.astype(np.float32) * alpha
             + background * (1.0 - alpha)
         ).clip(0, 255).astype(np.uint8)
-
         return composed
+
+    def render_spotlight(
+        self,
+        frame: np.ndarray,
+        gaze_point: Tuple[int, int],
+        radius: int,
+        brightness_reduction: int,
+        softness: int,
+        opacity: int,
+    ) -> np.ndarray:
+        self.prepare_background(frame, brightness_reduction, softness)
+        composed = self.compose_spotlight(gaze_point, radius, softness, opacity)
+        return frame if composed is None else composed
 
     @staticmethod
     def _detect_acceleration_label() -> str:
@@ -447,9 +479,16 @@ class PrivacyController(QtCore.QObject):
 
         self.frame_timer = QtCore.QTimer(self)
         self.frame_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
-        # Keep the desktop renderer responsive without tying it to the webcam inference rate.
-        self.frame_timer.setInterval(33)
+        # Spotlight position updates at ~60 FPS so gaze movement is not gated by
+        # the more expensive desktop capture/blur operation.
+        self.frame_timer.setInterval(16)
         self.frame_timer.timeout.connect(self._update_overlay_frame)
+
+        self.capture_timer = QtCore.QTimer(self)
+        self.capture_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
+        # Refresh the desktop background at ~30 FPS; gaze composition runs independently.
+        self.capture_timer.setInterval(33)
+        self.capture_timer.timeout.connect(self._capture_background)
         self.status_timer = QtCore.QTimer(self)
         self.status_timer.setInterval(500)
         self.status_timer.timeout.connect(self.emit_status)
@@ -485,10 +524,13 @@ class PrivacyController(QtCore.QObject):
                 self.face_tracker.start()
             self.gaze_estimator.reset()
             self.overlay.show_privacy()
+            self._capture_background()
             self.frame_timer.start()
+            self.capture_timer.start()
             self.notification_requested.emit("Privacy mode enabled", "Spotlight protection is running.")
         else:
             self.frame_timer.stop()
+            self.capture_timer.stop()
             if not self.eye_tracking_enabled:
                 self.face_tracker.stop()
             self.overlay.hide_privacy()
@@ -543,7 +585,9 @@ class PrivacyController(QtCore.QObject):
         self.calibration_timer.stop()
         self.overlay.end_calibration()
         if self.privacy_enabled:
+            self._capture_background()
             self.frame_timer.start()
+            self.capture_timer.start()
         else:
             if not self.eye_tracking_enabled:
                 self.face_tracker.stop()
@@ -643,7 +687,9 @@ class PrivacyController(QtCore.QObject):
         self.calibration_timer.stop()
         self.overlay.end_calibration()
         if self.privacy_enabled:
+            self._capture_background()
             self.frame_timer.start()
+            self.capture_timer.start()
         else:
             if not self.eye_tracking_enabled:
                 self.face_tracker.stop()
@@ -656,12 +702,31 @@ class PrivacyController(QtCore.QObject):
         confidence = observation.confidence if observation else 0.0
         return int(max(0.0, min(1.0, confidence)) * 100)
 
+    def _capture_background(self) -> None:
+        if not self.privacy_enabled or self.calibration.active:
+            return
+
+        overlay_hidden = False
+        try:
+            if self.overlay.is_capture_safe_to_hide():
+                self.overlay.prepare_for_capture()
+                overlay_hidden = True
+
+            frame = self.renderer.capture_screen()
+            self.renderer.prepare_background(
+                frame,
+                int(self.settings.get("brightness_reduction")),
+                int(self.settings.get("spotlight_softness")),
+            )
+        finally:
+            if overlay_hidden:
+                self.overlay.restore_after_capture()
+
     def _update_overlay_frame(self) -> None:
         if not self.privacy_enabled or self._frame_busy or self.calibration.active:
             return
 
         self._frame_busy = True
-        overlay_hidden = False
         try:
             # Consume the newest camera result without waiting for inference.
             observation = self.face_tracker.get_latest_observation() if self.eye_tracking_enabled else None
@@ -672,23 +737,14 @@ class PrivacyController(QtCore.QObject):
                     self.last_point = estimate.screen_point
                     self._last_gaze_point = estimate.screen_point
 
-            # Capture the underlying desktop only after the overlay is hidden.
-            if self.overlay.is_capture_safe_to_hide():
-                self.overlay.prepare_for_capture()
-                overlay_hidden = True
-
-            frame = self.renderer.capture_screen()
-            processed = self.renderer.render_spotlight(
-                frame,
+            processed = self.renderer.compose_spotlight(
                 self._last_gaze_point,
                 self.radius,
-                int(self.settings.get("brightness_reduction")),
                 int(self.settings.get("spotlight_softness")),
                 int(self.settings.get("spotlight_opacity")),
             )
-
-            if overlay_hidden:
-                self.overlay.restore_after_capture()
+            if processed is None:
+                return
 
             self.overlay.update_frame(processed)
             self._frame_count += 1
@@ -698,8 +754,6 @@ class PrivacyController(QtCore.QObject):
                 self._frame_count = 0
                 self._fps_started = time.perf_counter()
         finally:
-            if overlay_hidden and self.overlay.isHidden():
-                self.overlay.restore_after_capture()
             self._frame_busy = False
 
     def emit_status(self) -> None:
@@ -747,6 +801,7 @@ class PrivacyController(QtCore.QObject):
             return
         self._shutting_down = True
         self.frame_timer.stop()
+        self.capture_timer.stop()
         self.calibration_timer.stop()
         self.status_timer.stop()
         self.face_tracker.stop()

@@ -28,7 +28,7 @@ class CalibrationSample:
 
 class CalibrationMapper:
     GRID_SIZE = 5
-    MODEL_VERSION = 4
+    MODEL_VERSION = 5
     # The pupil-only model has six terms and 25 calibration samples. A small
     # ridge term keeps the fit stable without pulling legitimate edge/center
     # gaze positions toward one side of the display.
@@ -164,10 +164,6 @@ class CalibrationMapper:
         features: Optional[np.ndarray],
         fit_scaler: bool = False,
     ) -> np.ndarray:
-        # Calibration is learned from the actual normalized pupil positions
-        # inside both eyes. The four coordinates preserve horizontal and
-        # vertical eye movement independently, which is important at the
-        # display edges where a small pupil error can otherwise be compressed.
         if features is None:
             features = np.column_stack(
                 [
@@ -182,13 +178,23 @@ class CalibrationMapper:
         if values.ndim != 2 or values.shape[1] != self.GAZE_FEATURE_COUNT:
             raise ValueError(f"Calibration requires {self.GAZE_FEATURE_COUNT} pupil features")
 
-        x0, y0, x1, y1 = [values[:, index] for index in range(4)]
+        # Use binocular pupil position plus a small inter-eye asymmetry term.
+        # This is intentionally low-order: 25 calibration points should define
+        # the screen geometry without allowing webcam noise to create wild
+        # high-order oscillations between neighboring targets.
+        left_x, left_y, right_x, right_y = [values[:, index] for index in range(4)]
+        avg_x = (left_x + right_x) * 0.5
+        avg_y = (left_y + right_y) * 0.5
+        diff_x = left_x - right_x
+        diff_y = left_y - right_y
         parts = [
             np.ones(len(values), dtype=np.float64),
-            x0, y0, x1, y1,
-            x0 * x0, y0 * y0, x1 * x1, y1 * y1,
-            x0 * y0, x0 * x1, x0 * y1,
-            y0 * x1, y0 * y1, x1 * y1,
+            avg_x,
+            avg_y,
+            avg_x * avg_x,
+            avg_y * avg_y,
+            diff_x,
+            diff_y,
         ]
 
         del fit_scaler

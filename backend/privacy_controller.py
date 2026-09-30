@@ -195,6 +195,15 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self._status.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._status.setStyleSheet("color: white; background: rgba(0,0,0,132); border-radius: 10px; padding: 10px;")
         self._status.hide()
+        self._target_button = QtWidgets.QPushButton(self)
+        self._target_button.setFlat(True)
+        self._target_button.setFocusPolicy(QtCore.Qt.FocusPolicy.NoFocus)
+        self._target_button.setCursor(QtCore.Qt.CursorShape.PointingHandCursor)
+        self._target_button.setStyleSheet(
+            "QPushButton { background: transparent; border: none; padding: 0; }"
+        )
+        self._target_button.clicked.connect(self.calibration_click_requested.emit)
+        self._target_button.hide()
         self._target: Optional[Tuple[int, int]] = None
         self._guide_points: list[Tuple[int, int]] = []
         self._excluded = False
@@ -246,6 +255,17 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self._image.setPixmap(QtGui.QPixmap.fromImage(image))
         self._status.raise_()
 
+    def _position_target_button(self) -> None:
+        if self._target is None:
+            self._target_button.hide()
+            return
+        size = 112
+        x = max(0, min(int(self._target[0] - size / 2), max(0, self.width() - size)))
+        y = max(0, min(int(self._target[1] - size / 2), max(0, self.height() - size)))
+        self._target_button.setGeometry(x, y, size, size)
+        self._target_button.show()
+        self._target_button.raise_()
+
     def begin_calibration(self, target: Tuple[int, int], guide_points: list[Tuple[int, int]], text: str) -> None:
         self._calibrating = True
         self._target = target
@@ -256,18 +276,21 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self.show()
         self.raise_()
         self._set_click_through(False)
+        self._position_target_button()
         self.update()
 
     def update_calibration(self, target: Tuple[int, int], guide_points: list[Tuple[int, int]], text: str) -> None:
         self._target = target
         self._guide_points = guide_points
         self.set_status_text(text)
+        self._position_target_button()
         self.update()
 
     def end_calibration(self) -> None:
         self._calibrating = False
         self._target = None
         self._guide_points = []
+        self._target_button.hide()
         self.setAttribute(QtCore.Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self._set_click_through(True)
         self.update()
@@ -475,6 +498,7 @@ class PrivacyController(QtCore.QObject):
         self._calibration_collecting = False
         self._calibration_samples: list[tuple[Tuple[float, float], Tuple[float, ...]]] = []
         self._calibration_deadline = 0.0
+        self._calibration_sample_started = 0.0
         self._calibration_last_timestamp = -1.0
 
         self.frame_timer = QtCore.QTimer(self)
@@ -574,6 +598,8 @@ class PrivacyController(QtCore.QObject):
         self.face_tracker.start()
         self.frame_timer.stop()
         self.calibration_timer.start()
+        self._calibration_collecting = False
+        self._calibration_samples.clear()
         self._show_calibration_target()
         self.notification_requested.emit("Calibration started", "Look at each target and click to sample.")
 
@@ -631,19 +657,28 @@ class PrivacyController(QtCore.QObject):
             return
 
         self._calibration_collecting = False
-        if len(self._calibration_samples) < 6:
+        if len(self._calibration_samples) < 8:
             self.notification_requested.emit(
-                "Tracking unstable",
-                "Keep your face centered, hold your gaze, and try again.",
+                "Hold gaze and click again",
+                "Not enough stable eye samples were received for this target.",
             )
+            self.calibration_changed.emit({
+                "state": "Ready — click target again",
+                "progress": int((self.calibration.index / len(self.calibration.targets)) * 100),
+                "accuracy": self._accuracy_percent(),
+            })
             return
 
         vectors = np.asarray([item[0] for item in self._calibration_samples], dtype=np.float32)
         features = np.asarray([item[1] for item in self._calibration_samples], dtype=np.float32)
         center = np.median(vectors, axis=0)
         distances = np.linalg.norm(vectors - center, axis=1)
-        keep = distances <= np.percentile(distances, 80)
-        if int(keep.sum()) < 4:
+        cutoff = max(
+            float(np.percentile(distances, 82)),
+            float(np.median(distances) + 2.5 * np.std(distances)),
+        )
+        keep = distances <= cutoff
+        if int(keep.sum()) < 6:
             keep = np.ones(len(vectors), dtype=bool)
 
         gaze_vector = np.median(vectors[keep], axis=0)
@@ -672,8 +707,10 @@ class PrivacyController(QtCore.QObject):
         self._calibration_collecting = True
         self._calibration_samples.clear()
         self._calibration_last_timestamp = -1.0
-        self._calibration_deadline = time.perf_counter() + float(
-            self.settings.get("calibration_sample_seconds", 0.45)
+        self._calibration_sample_started = time.perf_counter()
+        self._calibration_deadline = self._calibration_sample_started + max(
+            0.45,
+            float(self.settings.get("calibration_sample_seconds", 0.55)),
         )
         self.calibration_changed.emit({
             "state": "Sampling...",

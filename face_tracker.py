@@ -190,14 +190,43 @@ class FaceTracker:
             min_tracking_confidence=0.65,
         )
 
+        read_failures = 0
         while self.running:
+            if self.capture is None or not self.capture.isOpened():
+                self.capture = self._open_camera()
+                if self.capture is None:
+                    with self.lock:
+                        self.latest_observation = self._empty_observation(
+                            time.perf_counter(),
+                            CAMERA_WIDTH,
+                            CAMERA_HEIGHT,
+                        )
+                    time.sleep(0.25)
+                    continue
+
             ok, frame = self.capture.read()
-            if not ok:
-                time.sleep(0.003)
+            if not ok or frame is None or frame.size == 0:
+                read_failures += 1
+                if read_failures >= 15:
+                    self.capture.release()
+                    self.capture = None
+                    read_failures = 0
+                    time.sleep(0.15)
+                else:
+                    time.sleep(0.003)
                 continue
 
+            read_failures = 0
             frame = cv2.flip(frame, 1)
-            observation = self._process_frame(frame)
+            try:
+                observation = self._process_frame(frame)
+            except (cv2.error, RuntimeError, ValueError, TypeError):
+                observation = self._empty_observation(
+                    time.perf_counter(),
+                    frame.shape[1],
+                    frame.shape[0],
+                )
+
             with self.lock:
                 self.latest_observation = observation
 

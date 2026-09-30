@@ -97,7 +97,7 @@ class TrackingPage(QtWidgets.QWidget):
         self.eye_switch = ToggleSwitch(settings.get("eye_tracking_enabled"))
         self.head_switch = ToggleSwitch(settings.get("head_pose_enabled"))
         controls.layout.addLayout(self._switch_row("Eye Tracking", "Enable or disable gaze tracking input.", self.eye_switch))
-        controls.layout.addLayout(self._switch_row("Head Pose Tracking", "Enable or disable head pose contribution.", self.head_switch))
+        controls.layout.addLayout(self._switch_row("Head Pose Diagnostics", "Diagnostic only; head movement never drives gaze.", self.head_switch))
         self.sensitivity = LabeledSlider("Tracking Sensitivity", 0, 100, settings.get("tracking_sensitivity"))
         self.smoothing = LabeledSlider("Smoothing", 0, 100, settings.get("smoothing"))
         self.threshold = LabeledSlider("Confidence Threshold", 0, 100, settings.get("confidence_threshold"))
@@ -126,7 +126,7 @@ class TrackingPage(QtWidgets.QWidget):
             ("Face", self.face_value),
             ("Pupils", self.iris_value),
             ("Gaze vector", self.gaze_value),
-            ("Iris centers", self.pupil_value),
+            ("Pupil centers", self.pupil_value),
             ("Head pose", self.pose_value),
             ("Pupil confidence", self.pupil_confidence_value),
             ("Gaze motion", self.motion_value),

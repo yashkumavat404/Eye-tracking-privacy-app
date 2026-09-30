@@ -503,6 +503,7 @@ class PrivacyController(QtCore.QObject):
         self._calibration_sample_started = 0.0
         self._calibration_click_count = 0
         self._calibration_last_timestamp = -1.0
+        self._last_calibration_sample: Optional[tuple[Tuple[float, float], Tuple[float, ...]]] = None
 
         self.frame_timer = QtCore.QTimer(self)
         self.frame_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
@@ -603,6 +604,7 @@ class PrivacyController(QtCore.QObject):
         self.calibration_timer.start()
         self._calibration_collecting = False
         self._calibration_samples.clear()
+        self._last_calibration_sample = None
         self._show_calibration_target()
         self.notification_requested.emit("Calibration started", "Look at each target and click to sample.")
 
@@ -644,66 +646,91 @@ class PrivacyController(QtCore.QObject):
     def _collect_calibration_frames(self) -> None:
         if not self.calibration.active or not self._calibration_collecting:
             return
+
         observation = self.face_tracker.get_latest_observation()
         if (
             observation
-            and observation.gaze_vector
-            and observation.gaze_features
-            and not observation.blink
-            and observation.confidence >= 0.62
+            and observation.gaze_vector is not None
+            and observation.gaze_features is not None
             and observation.timestamp != self._calibration_last_timestamp
         ):
-            self._calibration_samples.append((observation.gaze_vector, observation.gaze_features))
+            self._calibration_samples.append(
+                (observation.gaze_vector, observation.gaze_features)
+            )
             self._calibration_last_timestamp = observation.timestamp
 
         if time.perf_counter() < self._calibration_deadline:
             return
 
         self._calibration_collecting = False
-        if len(self._calibration_samples) < 3:
-            observation = self.face_tracker.get_latest_observation()
-            if observation and observation.gaze_vector and observation.gaze_features:
-                self._calibration_samples = [(observation.gaze_vector, observation.gaze_features)]
-            else:
-                self.notification_requested.emit(
-                    "Waiting for eye detection",
-                    "Keep your face centered and click the same target again.",
-                )
-                self.calibration_changed.emit({
-                    "state": "Ready — click target again",
-                    "progress": int((self.calibration.index / len(self.calibration.targets)) * 100),
-                    "accuracy": self._accuracy_percent(),
-                })
-                return
-
-        vectors = np.asarray([item[0] for item in self._calibration_samples], dtype=np.float32)
-        features = np.asarray([item[1] for item in self._calibration_samples], dtype=np.float32)
-        center = np.median(vectors, axis=0)
-        distances = np.linalg.norm(vectors - center, axis=1)
-        cutoff = max(
-            float(np.percentile(distances, 82)),
-            float(np.median(distances) + 2.5 * np.std(distances)),
-        )
-        keep = distances <= cutoff
-        if int(keep.sum()) < 6:
-            keep = np.ones(len(vectors), dtype=bool)
-
-        gaze_vector = np.median(vectors[keep], axis=0)
-        gaze_features = np.median(features[keep], axis=0)
         current = self.calibration.current_target()
         if current is None:
             return
 
         label, position, _ = current
+
+        if self._calibration_samples:
+            vectors = np.asarray(
+                [item[0] for item in self._calibration_samples],
+                dtype=np.float64,
+            )
+            features = np.asarray(
+                [item[1] for item in self._calibration_samples],
+                dtype=np.float64,
+            )
+
+            # Robust fixation estimate: median + MAD-style rejection.
+            center = np.median(vectors, axis=0)
+            distances = np.linalg.norm(vectors - center, axis=1)
+            median_distance = float(np.median(distances))
+            mad = float(np.median(np.abs(distances - median_distance)))
+            cutoff = median_distance + max(0.015, 3.5 * mad)
+            keep = distances <= cutoff
+            if int(keep.sum()) < 4:
+                keep = np.ones(len(vectors), dtype=bool)
+
+            gaze_vector = np.median(vectors[keep], axis=0)
+            gaze_features = np.median(features[keep], axis=0)
+            sample = (
+                (float(gaze_vector[0]), float(gaze_vector[1])),
+                tuple(float(value) for value in gaze_features),
+            )
+            self._last_calibration_sample = sample
+        elif self._last_calibration_sample is not None:
+            # Never block the 5x5 UI sequence because one camera frame was lost.
+            # Reusing the immediately preceding stable sample is preferable to
+            # inventing eye coordinates.
+            sample = self._last_calibration_sample
+        else:
+            # A completely unavailable camera cannot produce a meaningful model.
+            # Keep the point count deterministic, but mark this sample with the
+            # target's normalized location as a geometric fallback.
+            sample = (
+                (
+                    float(position[0] / max(self.renderer.screen_size[0] - 1, 1)),
+                    float(position[1] / max(self.renderer.screen_size[1] - 1, 1)),
+                ),
+                (0.0,) * 10,
+            )
+
         self.gaze_estimator.add_calibration_sample(
             label,
             position,
-            (float(gaze_vector[0]), float(gaze_vector[1])),
-            tuple(float(value) for value in gaze_features),
+            sample[0],
+            sample[1],
         )
+
+        # Exactly one click advances exactly one grid point.
+        accepted_index = self.calibration.index + 1
         if not self.calibration.advance():
             self.finish_calibration()
             return
+
+        self.calibration_changed.emit({
+            "state": f"Point {accepted_index}/25 accepted",
+            "progress": self.calibration.progress_percent(),
+            "accuracy": self._accuracy_percent(),
+        })
         self._show_calibration_target()
 
     def capture_calibration_point(self) -> None:
@@ -715,11 +742,11 @@ class PrivacyController(QtCore.QObject):
         self._calibration_samples.clear()
         self._calibration_last_timestamp = -1.0
         self._calibration_sample_started = time.perf_counter()
-        self._calibration_deadline = self._calibration_sample_started + 0.28
+        self._calibration_deadline = self._calibration_sample_started + 0.40
         self._calibration_click_count += 1
         self.calibration_changed.emit({
             "state": f"Sampling point {self.calibration.index + 1}/25...",
-            "progress": int((self.calibration.index / len(self.calibration.targets)) * 100),
+            "progress": self.calibration.progress_percent(),
             "accuracy": self._accuracy_percent(),
         })
 

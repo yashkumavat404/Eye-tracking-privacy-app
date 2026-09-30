@@ -883,7 +883,7 @@ class PrivacyController(QtCore.QObject):
         self.overlay.set_status_text(
             f"Privacy: {'ON' if self.privacy_enabled else 'OFF'} | "
             f"Face: {'YES' if face_detected else 'NO'} | "
-            f"Iris: {'YES' if diagnostics['iris_detected'] else 'NO'} | "
+            f"Pupil: {'YES' if diagnostics['iris_detected'] else 'NO'} | "
             f"Gaze: {gaze_text} | Confidence: {confidence}% | "
             f"Track FPS: {diagnostics['processing_fps']:.1f}"
         )

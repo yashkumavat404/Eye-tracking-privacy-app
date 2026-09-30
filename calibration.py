@@ -27,7 +27,7 @@ class CalibrationSample:
 
 class CalibrationMapper:
     GRID_SIZE = 5
-    MODEL_VERSION = 2
+    MODEL_VERSION = 3
     RIDGE_LAMBDA = 0.08
 
     def __init__(self, screen_size: Tuple[int, int]) -> None:
@@ -80,7 +80,11 @@ class CalibrationMapper:
         except (OSError, json.JSONDecodeError):
             return False
 
-        if payload.get("screen_width") != self.screen_width or payload.get("screen_height") != self.screen_height:
+        if (
+            payload.get("model_version") != self.MODEL_VERSION
+            or payload.get("screen_width") != self.screen_width
+            or payload.get("screen_height") != self.screen_height
+        ):
             return False
 
         loaded: Dict[str, CalibrationSample] = {}
@@ -170,7 +174,12 @@ class CalibrationMapper:
         feature_rows = [sample.gaze_features for sample in ordered]
         features: Optional[np.ndarray]
         if feature_rows and all(row is not None for row in feature_rows):
-            features = np.asarray(feature_rows, dtype=np.float64)
+            lengths = {len(row) for row in feature_rows}
+            features = (
+                np.asarray(feature_rows, dtype=np.float64)
+                if len(lengths) == 1 and next(iter(lengths)) == 4
+                else None
+            )
         else:
             features = None
 

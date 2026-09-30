@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
@@ -29,6 +30,7 @@ class CalibrationMapper:
     GRID_SIZE = 5
     MODEL_VERSION = 2
     RIDGE_LAMBDA = 0.08
+    GAZE_FEATURE_COUNT = 10
 
     def __init__(self, screen_size: Tuple[int, int]) -> None:
         self.screen_width, self.screen_height = screen_size
@@ -80,16 +82,23 @@ class CalibrationMapper:
         except (OSError, json.JSONDecodeError):
             return False
 
+        if payload.get("model_version") != self.MODEL_VERSION:
+            return False
         if payload.get("screen_width") != self.screen_width or payload.get("screen_height") != self.screen_height:
             return False
 
         loaded: Dict[str, CalibrationSample] = {}
         try:
-            for row in payload.get("samples", []):
+            rows = payload.get("samples", [])
+            if not isinstance(rows, list) or len(rows) != self.GRID_SIZE ** 2:
+                return False
+            for row in rows:
                 label = row["label"]
                 point = (int(row["screen_point"][0]), int(row["screen_point"][1]))
                 vector = (float(row["gaze_vector"][0]), float(row["gaze_vector"][1]))
                 features = row.get("gaze_features")
+                if features is not None and len(features) != self.GAZE_FEATURE_COUNT:
+                    return False
                 loaded[label] = CalibrationSample(
                     label,
                     point,
@@ -99,11 +108,16 @@ class CalibrationMapper:
         except (KeyError, TypeError, ValueError, IndexError):
             return False
 
+        if set(loaded) != self.required_labels() or len(loaded) != self.GRID_SIZE ** 2:
+            return False
+
         self.samples = loaded
         self._fit_regression()
         return self.is_complete()
 
     def save(self, path: Path = CALIBRATION_FILE) -> None:
+        if not self.is_complete():
+            raise ValueError("Refusing to save an incomplete calibration")
         payload = {
             "model_version": self.MODEL_VERSION,
             "screen_width": self.screen_width,
@@ -118,7 +132,9 @@ class CalibrationMapper:
                 for sample in self.samples.values()
             ],
         }
-        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        temporary_path = path.with_suffix(path.suffix + ".tmp")
+        temporary_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        os.replace(temporary_path, path)
 
     def add_sample(
         self,
@@ -127,6 +143,14 @@ class CalibrationMapper:
         gaze_vector: Tuple[float, float],
         gaze_features: Optional[Tuple[float, ...]] = None,
     ) -> None:
+        if label not in self.required_labels():
+            raise ValueError(f"Unknown calibration target: {label}")
+        if not all(np.isfinite(value) for value in gaze_vector):
+            raise ValueError("Calibration gaze vector must be finite")
+        if gaze_features is not None and not all(np.isfinite(value) for value in gaze_features):
+            raise ValueError("Calibration gaze features must be finite")
+        if gaze_features is not None and len(gaze_features) != self.GAZE_FEATURE_COUNT:
+            raise ValueError(f"Calibration requires {self.GAZE_FEATURE_COUNT} gaze features")
         self.samples[label] = CalibrationSample(label, screen_point, gaze_vector, gaze_features)
         self._fit_regression()
 
@@ -213,6 +237,8 @@ class CalibrationMapper:
                 raw = np.asarray([gaze_features], dtype=np.float64)
                 if raw.shape[1] == self._feature_mean.shape[0]:
                     features = raw
+                else:
+                    features = self._feature_mean.reshape(1, -1)
         design = self._design_matrix(vector, features, fit_scaler=False)
         if self._coefficients is None:
             return np.asarray([gaze_vector[0] * self.screen_width, gaze_vector[1] * self.screen_height], dtype=np.float64)

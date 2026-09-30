@@ -13,6 +13,8 @@ CAMERA_HEIGHT = 720
 CAMERA_FPS = 30
 PROCESS_WIDTH = 960
 PROCESS_HEIGHT = 540
+CAMERA_REOPEN_FAILURES = 3
+CAMERA_REOPEN_DELAY = 0.25
 
 LEFT_IRIS = [468, 469, 470, 471, 472]
 RIGHT_IRIS = [473, 474, 475, 476, 477]
@@ -61,6 +63,7 @@ class FaceTracker:
         self.camera_index = camera_index
         self.capture: Optional[cv2.VideoCapture] = None
         self.running = False
+        self._stop_requested = threading.Event()
         self.thread: Optional[threading.Thread] = None
         self.latest_observation: Optional[FaceObservation] = None
         self.lock = threading.Lock()
@@ -82,6 +85,7 @@ class FaceTracker:
     def start(self) -> None:
         if self.running:
             return
+        self._stop_requested.clear()
         self._gaze_vector_history.clear()
         self._neutral_pitch = 0.0
         self._neutral_yaw = 0.0
@@ -99,15 +103,19 @@ class FaceTracker:
 
     def stop(self) -> None:
         self.running = False
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=1.0)
+        self._stop_requested.set()
+        # Releasing first unblocks a camera read that is waiting on a removed
+        # or stalled device, allowing the worker to exit promptly.
+        capture = self.capture
+        if capture is not None:
+            capture.release()
+        worker = self.thread
+        if worker and worker.is_alive():
+            worker.join(timeout=2.0)
         self.thread = None
-        if self._face_mesh is not None:
-            self._face_mesh.close()
-            self._face_mesh = None
-        if self.capture is not None:
-            self.capture.release()
-            self.capture = None
+        # The worker owns FaceMesh and closes it in its finally block. Closing
+        # it here while inference is active can crash MediaPipe during exit.
+        self.capture = None
 
     def get_latest_observation(self) -> Optional[FaceObservation]:
         with self.lock:
@@ -172,35 +180,60 @@ class FaceTracker:
         return capture
 
     def _worker(self) -> None:
-        self.capture = self._open_camera()
-        if self.capture is None:
+        failures = 0
+        try:
+            self._face_mesh = mp.solutions.face_mesh.FaceMesh(
+                max_num_faces=1,
+                refine_landmarks=True,
+                min_detection_confidence=0.50,
+                min_tracking_confidence=0.65,
+            )
+            while not self._stop_requested.is_set():
+                if self.capture is None or not self.capture.isOpened():
+                    self.capture = self._open_camera()
+                    if self.capture is None:
+                        self._stop_requested.wait(CAMERA_REOPEN_DELAY)
+                        continue
+                    failures = 0
+
+                try:
+                    ok, frame = self.capture.read()
+                except cv2.error:
+                    ok, frame = False, None
+                if not ok or frame is None:
+                    failures += 1
+                    if failures >= CAMERA_REOPEN_FAILURES:
+                        self.capture.release()
+                        self.capture = None
+                        failures = 0
+                        self._stop_requested.wait(CAMERA_REOPEN_DELAY)
+                    else:
+                        self._stop_requested.wait(0.01)
+                    continue
+
+                failures = 0
+                frame = cv2.flip(frame, 1)
+                try:
+                    observation = self._process_frame(frame)
+                except cv2.error:
+                    continue
+                with self.lock:
+                    self.latest_observation = observation
+
+                self._frame_count += 1
+                elapsed = time.perf_counter() - self._fps_started
+                if elapsed >= 1.0:
+                    self.processing_fps = self._frame_count / elapsed
+                    self._frame_count = 0
+                    self._fps_started = time.perf_counter()
+        finally:
             self.running = False
-            return
-
-        self._face_mesh = mp.solutions.face_mesh.FaceMesh(
-            max_num_faces=1,
-            refine_landmarks=True,
-            min_detection_confidence=0.50,
-            min_tracking_confidence=0.65,
-        )
-
-        while self.running:
-            ok, frame = self.capture.read()
-            if not ok:
-                time.sleep(0.003)
-                continue
-
-            frame = cv2.flip(frame, 1)
-            observation = self._process_frame(frame)
-            with self.lock:
-                self.latest_observation = observation
-
-            self._frame_count += 1
-            elapsed = time.perf_counter() - self._fps_started
-            if elapsed >= 1.0:
-                self.processing_fps = self._frame_count / elapsed
-                self._frame_count = 0
-                self._fps_started = time.perf_counter()
+            if self.capture is not None:
+                self.capture.release()
+                self.capture = None
+            if self._face_mesh is not None:
+                self._face_mesh.close()
+                self._face_mesh = None
 
     def _process_frame(self, frame: np.ndarray) -> FaceObservation:
         timestamp = time.perf_counter()
@@ -317,7 +350,8 @@ class FaceTracker:
     def get_diagnostics(self) -> dict:
         observation = self.get_latest_observation()
         camera_open = bool(self.capture is not None and self.capture.isOpened())
-        if observation is None:
+        stale = observation is None or time.perf_counter() - observation.timestamp > 0.50
+        if stale:
             return {
                 "camera_open": camera_open,
                 "face_detected": False,
@@ -333,6 +367,8 @@ class FaceTracker:
                 "confidence": 0.0,
                 "processing_fps": self.processing_fps,
                 "gaze_motion": 0.0,
+                "neutral_ready": self._neutral_ready,
+                "stale": True,
             }
 
         motion = 0.0
@@ -356,6 +392,7 @@ class FaceTracker:
             "processing_fps": self.processing_fps,
             "gaze_motion": motion,
             "neutral_ready": self._neutral_ready,
+            "stale": False,
         }
 
     def _stabilize_gaze_vector(self, raw_x: float, raw_y: float) -> Tuple[float, float]:

@@ -46,8 +46,12 @@ class SpotlightRenderer:
 
     def __init__(self) -> None:
         self.sct = mss.mss()
-        self.monitor = self.sct.monitors[1]
+        # MSS monitor 0 is the complete virtual desktop. The overlay uses the
+        # same surface, so capture, calibration and gaze coordinates share one
+        # origin even when displays are arranged left/up of the primary monitor.
+        self.monitor = self.sct.monitors[0]
         self.screen_size = (self.monitor["width"], self.monitor["height"])
+        self.screen_origin = (self.monitor["left"], self.monitor["top"])
         self.acceleration_label = self._detect_acceleration_label()
 
         pixels = self.screen_size[0] * self.screen_size[1]
@@ -64,6 +68,9 @@ class SpotlightRenderer:
         self._last_shot = self.sct.grab(self.monitor)
         # Keep the screenshot object alive because the numpy array is a view.
         return np.asarray(self._last_shot, dtype=np.uint8)[:, :, :3]
+
+    def close(self) -> None:
+        self.sct.close()
 
     def prepare_background(
         self,
@@ -141,7 +148,9 @@ class SpotlightRenderer:
             (width, height),
             interpolation=cv2.INTER_LINEAR,
         )[..., None]
-        alpha *= np.clip(opacity / 100.0, 0.1, 1.0)
+        # Zero opacity is used after a sustained tracking loss, so no stale
+        # spotlight remains visible when the user has left the camera view.
+        alpha *= np.clip(opacity / 100.0, 0.0, 1.0)
 
         composed = (
             frame.astype(np.float32) * alpha
@@ -335,8 +344,10 @@ class PrivacyOverlay(QtWidgets.QWidget):
         self.update()
 
     def mousePressEvent(self, event: QtGui.QMouseEvent) -> None:
-        if self._calibrating and event.button() == QtCore.Qt.MouseButton.LeftButton:
-            self.calibration_click_requested.emit()
+        # Only the visible target button advances a calibration point. A click
+        # elsewhere should never create a sample for a target the user was not
+        # actually looking at.
+        if self._calibrating:
             event.accept()
             return
         super().mousePressEvent(event)
@@ -533,6 +544,7 @@ class PrivacyController(QtCore.QObject):
         self._shutting_down = False
         self._last_observation_timestamp = -1.0
         self._last_gaze_point = self.last_point
+        self._last_valid_gaze_at = 0.0
         self._capture_failures = 0
         self._calibration_collecting = False
         self._calibration_samples: list[tuple[Tuple[float, float], Tuple[float, ...]]] = []
@@ -551,8 +563,10 @@ class PrivacyController(QtCore.QObject):
 
         self.capture_timer = QtCore.QTimer(self)
         self.capture_timer.setTimerType(QtCore.Qt.TimerType.PreciseTimer)
-        # Refresh the desktop background at ~30 FPS; gaze composition runs independently.
-        self.capture_timer.setInterval(33)
+        # Refresh the desktop background at 10 FPS; gaze composition still runs
+        # independently at 60 FPS and the lower capture rate keeps the GUI
+        # responsive on integrated GPUs.
+        self.capture_timer.setInterval(100)
         self.capture_timer.timeout.connect(self._capture_background)
         self.status_timer = QtCore.QTimer(self)
         self.status_timer.setInterval(500)
@@ -708,6 +722,8 @@ class PrivacyController(QtCore.QObject):
             and observation.gaze_vector is not None
             and observation.gaze_features is not None
             and observation.timestamp != self._calibration_last_timestamp
+            and not observation.blink
+            and observation.confidence >= 0.62
         ):
             self._calibration_samples.append(
                 (observation.gaze_vector, observation.gaze_features)
@@ -724,7 +740,7 @@ class PrivacyController(QtCore.QObject):
 
         label, position, _ = current
 
-        if self._calibration_samples:
+        if len(self._calibration_samples) >= 6:
             vectors = np.asarray(
                 [item[0] for item in self._calibration_samples],
                 dtype=np.float64,
@@ -751,22 +767,17 @@ class PrivacyController(QtCore.QObject):
                 tuple(float(value) for value in gaze_features),
             )
             self._last_calibration_sample = sample
-        elif self._last_calibration_sample is not None:
-            # Never block the 5x5 UI sequence because one camera frame was lost.
-            # Reusing the immediately preceding stable sample is preferable to
-            # inventing eye coordinates.
-            sample = self._last_calibration_sample
         else:
-            # A completely unavailable camera cannot produce a meaningful model.
-            # Keep the point count deterministic, but mark this sample with the
-            # target's normalized location as a geometric fallback.
-            sample = (
-                (
-                    float(position[0] / max(self.renderer.screen_size[0] - 1, 1)),
-                    float(position[1] / max(self.renderer.screen_size[1] - 1, 1)),
-                ),
-                (0.0,) * 10,
+            self.calibration_changed.emit({
+                "state": f"Point {self.calibration.index + 1}/25 needs a steadier camera view",
+                "progress": self.calibration.progress_percent(),
+                "accuracy": self._accuracy_percent(),
+            })
+            self.notification_requested.emit(
+                "Calibration sample rejected",
+                "Keep both eyes visible, look at the target, then click it again.",
             )
+            return
 
         self.gaze_estimator.add_calibration_sample(
             label,
@@ -842,6 +853,11 @@ class PrivacyController(QtCore.QObject):
                 int(self.settings.get("brightness_reduction")),
                 int(self.settings.get("spotlight_softness")),
             )
+            self._capture_failures = 0
+        except (mss.exception.ScreenShotError, OSError, cv2.error) as exc:
+            self._capture_failures += 1
+            if self._capture_failures == 1:
+                self.notification_requested.emit("Desktop capture unavailable", str(exc))
         finally:
             if overlay_hidden:
                 self.overlay.restore_after_capture()
@@ -854,18 +870,29 @@ class PrivacyController(QtCore.QObject):
         try:
             # Consume the newest camera result without waiting for inference.
             observation = self.face_tracker.get_latest_observation() if self.eye_tracking_enabled else None
-            if observation is not None and observation.timestamp != self._last_observation_timestamp:
+            now = time.perf_counter()
+            observation_is_fresh = (
+                observation is not None and now - observation.timestamp <= 0.50
+            )
+            if observation_is_fresh and observation.timestamp != self._last_observation_timestamp:
                 self._last_observation_timestamp = observation.timestamp
                 estimate = self.gaze_estimator.estimate(observation)
                 if estimate is not None:
                     self.last_point = estimate.screen_point
                     self._last_gaze_point = estimate.screen_point
+                    self._last_valid_gaze_at = now
+
+            # Brief loss is normal during a blink. After that grace period, do
+            # not leave the last user's clear area visible for an observer.
+            opacity = int(self.settings.get("spotlight_opacity"))
+            if now - self._last_valid_gaze_at > 0.35:
+                opacity = 0
 
             processed = self.renderer.compose_spotlight(
                 self._last_gaze_point,
                 self.radius,
                 int(self.settings.get("spotlight_softness")),
-                int(self.settings.get("spotlight_opacity")),
+                opacity,
             )
             if processed is None:
                 return
@@ -931,4 +958,5 @@ class PrivacyController(QtCore.QObject):
         self.face_tracker.stop()
         self.overlay.close()
         self.hotkeys.close()
+        self.renderer.close()
         self.app.quit()

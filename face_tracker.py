@@ -452,7 +452,7 @@ class FaceTracker:
         else:
             history = np.stack(self._gaze_vector_history, axis=0)
             median = np.median(history, axis=0)
-            stabilized = (0.90 * vector) + (0.10 * median)
+            stabilized = (0.62 * vector) + (0.38 * median)
 
         return float(stabilized[0]), float(stabilized[1])
 
